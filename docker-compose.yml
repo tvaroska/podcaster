@@ -1,0 +1,26 @@
+services:
+  podcaster:
+    build:
+      context: .
+      target: server
+    ports:
+      - "8080:8080"
+    environment:
+      PODCASTER_DEV: "1"
+      LISTEN_ADDR: ":8080"
+      PUBLIC_BASE_URL: "http://localhost:8080"
+      STORE_BACKEND: sqlite
+      SQLITE_PATH: /data/podcaster.db
+      STORAGE_BACKEND: local
+      LOCAL_DATA_DIR: /data
+      JOB_BACKEND: local
+      TTS_ENGINE: mock
+      AGENT_API_KEY: dev-agent-key
+      FEED_USERNAME: podcast
+      FEED_PASSWORD: podcast
+      FEED_TOKEN: dev-feed-token
+    volumes:
+      - podcaster-data:/data
+
+volumes:
+  podcaster-data:

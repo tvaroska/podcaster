@@ -1,0 +1,12 @@
+.git
+.bin
+/bin
+/data
+*.db
+.env
+.env.*
+!.env.example
+coverage.*
+*.out
+.idea
+.vscode

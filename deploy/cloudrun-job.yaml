@@ -1,0 +1,40 @@
+# Deploy:
+# gcloud run jobs deploy podcaster-worker \
+#   --image=$REGION-docker.pkg.dev/$PROJECT/podcaster/worker:latest \
+#   --region=$REGION \
+#   --service-account=podcaster-sa@$PROJECT.iam.gserviceaccount.com \
+#   --tasks=1 \
+#   --max-retries=1 \
+#   --task-timeout=30m \
+#   --cpu=2 \
+#   --memory=2Gi \
+#   --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=cloudrun,TTS_ENGINE=piper,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET,CLOUD_RUN_JOB=podcaster-worker,CLOUD_RUN_REGION=$REGION \
+#   --set-secrets=AGENT_API_KEY=agent-api-key:latest,FEED_USERNAME=feed-username:latest,FEED_PASSWORD=feed-password:latest
+#
+# The control plane injects EPISODE_ID per execution via RunJob overrides.
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: podcaster-worker
+spec:
+  template:
+    spec:
+      taskCount: 1
+      template:
+        spec:
+          maxRetries: 1
+          timeoutSeconds: 1800
+          serviceAccountName: podcaster-sa
+          containers:
+            - image: IMAGE
+              env:
+                - name: STORE_BACKEND
+                  value: firestore
+                - name: STORAGE_BACKEND
+                  value: gcs
+                - name: TTS_ENGINE
+                  value: piper
+              resources:
+                limits:
+                  cpu: "2"
+                  memory: 2Gi

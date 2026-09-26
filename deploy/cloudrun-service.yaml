@@ -1,0 +1,53 @@
+# Template. Prefer gcloud (secrets + env are easier to wire than this YAML):
+#
+# gcloud run deploy podcaster \
+#   --image=$REGION-docker.pkg.dev/$PROJECT/podcaster/server:latest \
+#   --region=$REGION \
+#   --service-account=podcaster-sa@$PROJECT.iam.gserviceaccount.com \
+#   --allow-unauthenticated \
+#   --port=8080 \
+#   --cpu=1 --memory=512Mi --timeout=3600 \
+#   --min-instances=0 --max-instances=4 \
+#   --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=cloudrun,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET,CLOUD_RUN_JOB=podcaster-worker,CLOUD_RUN_REGION=$REGION,PUBLIC_BASE_URL=https://YOUR_URL \
+#   --set-secrets=AGENT_API_KEY=agent-api-key:latest,FEED_USERNAME=feed-username:latest,FEED_PASSWORD=feed-password:latest,FEED_TOKEN=feed-token:latest
+#
+# Ingress is public so podcast clients can fetch the feed; the feed and audio
+# still require HTTP Basic / token. Tighten with --no-allow-unauthenticated
+# plus an IAP/load balancer if you only ingest via private VPC.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: podcaster
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "4"
+    spec:
+      serviceAccountName: podcaster-sa
+      containerConcurrency: 80
+      timeoutSeconds: 3600
+      containers:
+        - image: IMAGE
+          ports:
+            - containerPort: 8080
+          env:
+            - name: STORE_BACKEND
+              value: firestore
+            - name: STORAGE_BACKEND
+              value: gcs
+            - name: JOB_BACKEND
+              value: cloudrun
+            - name: TTS_ENGINE
+              value: mock
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          startupProbe:
+            httpGet:
+              path: /healthz
+          livenessProbe:
+            httpGet:
+              path: /healthz
