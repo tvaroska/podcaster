@@ -1,4 +1,5 @@
-# Template. Prefer gcloud (secrets + env are easier to wire than this YAML):
+# Template / comments only. Deploy with gcloud, not kubectl apply.
+# See docs/deployment.md for the working command sequence.
 #
 # gcloud run deploy podcaster \
 #   --image=$REGION-docker.pkg.dev/$PROJECT/podcaster/server:latest \
@@ -8,12 +9,14 @@
 #   --port=8080 \
 #   --cpu=1 --memory=512Mi --timeout=3600 \
 #   --min-instances=0 --max-instances=4 \
-#   --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=cloudrun,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET,CLOUD_RUN_JOB=podcaster-worker,CLOUD_RUN_REGION=$REGION,PUBLIC_BASE_URL=https://YOUR_URL \
+#   --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=cloudrun,TTS_ENGINE=mock,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET,CLOUD_RUN_JOB_NAME=podcaster-worker,CLOUD_RUN_REGION=$REGION,PUBLIC_BASE_URL=https://YOUR_URL,VOICE_ALLOWLIST=en_US-lessac-medium \
 #   --set-secrets=AGENT_API_KEY=agent-api-key:latest,FEED_USERNAME=feed-username:latest,FEED_PASSWORD=feed-password:latest,FEED_TOKEN=feed-token:latest
 #
+# If the org policy blocks allUsers, replace --allow-unauthenticated with
+# --no-allow-unauthenticated --no-invoker-iam-check.
+# Do not set env CLOUD_RUN_JOB (reserved on Cloud Run Services).
 # Ingress is public so podcast clients can fetch the feed; the feed and audio
-# still require HTTP Basic / token. Tighten with --no-allow-unauthenticated
-# plus an IAP/load balancer if you only ingest via private VPC.
+# still require HTTP Basic / token.
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
@@ -47,7 +50,7 @@ spec:
               memory: 512Mi
           startupProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
           livenessProbe:
             httpGet:
               path: /healthz

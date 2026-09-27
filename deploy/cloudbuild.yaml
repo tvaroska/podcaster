@@ -1,14 +1,15 @@
 steps:
   - name: gcr.io/cloud-builders/docker
-    args: ["build", "--target", "server", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:${SHORT_SHA}", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:latest", "."]
+    args: ["build", "--target", "server", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:${_TAG}", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:latest", "."]
   - name: gcr.io/cloud-builders/docker
-    args: ["build", "--target", "worker", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:${SHORT_SHA}", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:latest", "."]
+    args: ["build", "--target", "worker", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:${_TAG}", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:latest", "."]
 images:
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:${SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:${_TAG}
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:latest
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:${SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:${_TAG}
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:latest
 substitutions:
   _REGION: us-central1
+  _TAG: latest
 options:
   logging: CLOUD_LOGGING_ONLY

@@ -1,104 +1,64 @@
 # Podcaster
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](go.mod)
+[![Go Version](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go)](go.mod)
 
-**Podcaster** is a private podcast platform tailored for autonomous AI agents and automated workflows. Agents publish textual briefings and updates via **REST** or **MCP (Model Context Protocol)**; background workers synthesize natural speech via [Piper ONNX](https://github.com/rhasspy/piper); and listeners stream the generated episodes through an authenticated, private RSS feed in any standard podcast player.
+Private podcasts for agents. An agent publishes text over **REST** or **MCP**; a worker turns it into speech with [Piper](https://github.com/rhasspy/piper); each listener gets their own authenticated RSS feed in a normal podcast app.
 
 ```
-                           +---------------------------+
-                           |  AI Agent (Claude / Code) |
-                           +---------------------------+
-                                         |
-                                (REST / MCP Requests)
-                                         v
-+----------------------------------------------------------------------------------+
-| Control Plane (`cmd/server`)                                                     |
-|  - Ingest: POST /v1/episodes               - MCP Server: /mcp                    |
-|  - Feed: GET /podcast.xml                  - Audio Stream: GET /audio/{id}.mp3   |
-+----------------------------------------------------------------------------------+
-          |                         |                                  ^
-  1. Save Metadata          2. Enqueue Job                     4. Audio Delivery
-          v                         v                                  |
-  +---------------+        +------------------+                        |
-  | SQLite /      |        | Cloud Run Job /  |                        |
-  | Firestore     |        | In-Process Queue |                        |
-  +---------------+        +------------------+                        |
-          ^                         |                                  |
-          | 3. Update Status        v                                  |
-          +----------------- +--------------+                          |
-                             | TTS Worker   | --- Upload MP3 ---> +---------------+
-                             | (cmd/worker) |                     | Local Disk /  |
-                             +--------------+                     | Private GCS   |
-                                                                  +---------------+
-                                                                       ^
-                                                                       |
-                                                      +-------------------------------+
-                                                      | Podcast App                   |
-                                                      | (Apple Podcasts, Overcast...) |
-                                                      +-------------------------------+
+  AI agent (REST / MCP)
+           |
+           v
+  +--------------------+     RunJob      +------------------+
+  | Control plane      | ---------------> | Worker (Piper)   |
+  | cmd/server         |                 | cmd/worker        |
+  | REST, MCP, RSS     |                 +--------+---------+
+  +--------+-----------+                          |
+           |                                      | MP3
+           v                                      v
+  SQLite / Firestore                    local disk / private GCS
+           ^                                      |
+           |                                      v
+           +-------- GET /p/{id}/podcast.xml -----+
+                    (Basic auth or ?token=)
+                              |
+                    Apple Podcasts / Overcast / ...
 ```
+
+There is **one publisher** (the `AGENT_API_KEY`) and **many private shows**. Creating a user means creating a show: slug, title, unique password, feed at `/p/{id}/podcast.xml`. The default `/podcast.xml` is a separate show that uses `FEED_USERNAME` / `FEED_PASSWORD`.
 
 ---
 
-## Highlights
+## Table of contents
 
-- **🤖 Native Agent Integration**: First-class support for both standard **REST JSON APIs** and **Model Context Protocol (MCP)** streamable HTTP endpoints (`/mcp`), enabling Claude Desktop, Claude Code, Cursor, or custom agents to publish updates natively.
-- **⚡ Asynchronous Audio Synthesis**: Non-blocking ingestion. TTS runs out-of-band via embedded CPU-optimized [Piper ONNX](https://github.com/rhasspy/piper) (or a zero-dependency mock synthesizer for dev).
-- **🔒 Private & Secure Feed**: Access-controlled via HTTP Basic Authentication or signed query tokens. Channel includes `<itunes:block>yes</itunes:block>` to prevent indexing by public podcast directories.
-- **📱 Universal Podcast Player Compatibility**: Seamlessly works with Apple Podcasts, Overcast, Pocket Casts, Castro, and AntennaPod. Enclosure media links preserve token authentication automatically.
-- **☁️ Serverless or Self-Hosted**: Runs as a single lightweight binary locally (SQLite + local disk + in-process queue) or scales serverlessly on GCP (Cloud Run Services + Cloud Run Jobs + Firestore + GCS).
-
----
-
-## Table of Contents
-
-- [Quick Start](#quick-start)
-  - [Prerequisites](#prerequisites)
-  - [Run Locally (Native Go)](#run-locally-native-go)
-  - [Run with Docker Compose](#run-with-docker-compose)
-  - [Automated Smoke Test](#automated-smoke-test)
-- [Subscribing in Podcast Apps](#subscribing-in-podcast-apps)
-- [Agent & MCP Integration](#agent--mcp-integration)
-  - [REST API Usage](#rest-api-usage)
-  - [Claude Desktop & Claude Code Configuration](#claude-desktop--claude-code-configuration)
-  - [Available MCP Tools](#available-mcp-tools)
-- [Pluggable Architecture](#pluggable-architecture)
-- [Configuration Reference](#configuration-reference)
-- [Production Deployment (GCP)](#production-deployment-gcp)
-- [Development Commands](#development-commands)
-- [Documentation Index](#documentation-index)
+- [Quick start (local)](#quick-start-local)
+- [Create a private show](#create-a-private-show)
+- [Subscribe in a podcast app](#subscribe-in-a-podcast-app)
+- [Agent / MCP](#agent--mcp)
+- [Configuration](#configuration)
+- [Production (GCP)](#production-gcp)
+- [Development commands](#development-commands)
+- [Documentation](#documentation)
 - [License](#license)
 
 ---
 
-## Quick Start
+## Quick start (local)
 
-### Prerequisites
-
-- **Go 1.22+** (Go 1.24 recommended)
-- **ffmpeg** (optional for mock TTS; required when using Piper ONNX)
-- **Docker** (optional, for containerized run)
-
-### Run Locally (Native Go)
-
-Clone the repository and run the server with local development defaults:
+Requires **Go 1.26** (see `go.mod`) and optionally **ffmpeg** (needed for Piper, not for the mock voice).
 
 ```bash
-git clone git@github.com:tvaroska/podcaster.git
+git clone https://github.com/tvaroska/podcaster.git
 cd podcaster
-
-# Run test suite
 make test
-
-# Start the server (SQLite + local storage + in-process mock TTS)
 make run
 ```
 
-In another terminal, publish a test episode:
+`make run` starts the server with SQLite, local disk, an in-process queue, and mock TTS. It does **not** read a `.env` file — it sets those defaults in the process environment.
+
+In another terminal:
 
 ```bash
-# 1. Post a new episode (authenticated with the dev bearer token)
 curl -sS -X POST http://localhost:8080/v1/episodes \
   -H "Authorization: Bearer dev-agent-key" \
   -H "Content-Type: application/json" \
@@ -108,23 +68,17 @@ curl -sS -X POST http://localhost:8080/v1/episodes \
     "category": "Daily Briefing"
   }'
 
-# 2. Wait a couple seconds for synthesis, then pull the authenticated RSS feed:
+# wait a second, then:
 curl -sS -u podcast:podcast http://localhost:8080/podcast.xml
 ```
 
-### Run with Docker Compose
-
-A containerized environment with persistent data storage is preconfigured:
+Docker (same defaults, data in the `podcaster-data` volume):
 
 ```bash
 docker compose up --build
 ```
 
-The server binds to `http://localhost:8080` with volume-backed persistence in `podcaster-data`.
-
-### Automated Smoke Test
-
-Run the built-in end-to-end smoke test which posts an episode, polls until `READY`, and fetches the generated RSS feed:
+End-to-end against a running server:
 
 ```bash
 make smoke
@@ -132,91 +86,65 @@ make smoke
 
 ---
 
-## Subscribing in Podcast Apps
+## Create a private show
 
-Podcaster generates an RSS 2.0 feed with full iTunes podcast tags. Because the feed is private, clients must authenticate.
-
-### Supported Subscription Formats
-
-1. **Embedded Basic Authentication URL** (recommended for Overcast, Pocket Casts, Apple Podcasts):
-   ```
-   http://podcast:podcast@localhost:8080/podcast.xml
-   ```
-   *(In production, replace with your public HTTPS address, e.g. `https://username:password@podcast.example.com/podcast.xml`)*
-
-2. **Query Parameter Token** (for players that do not support URL-embedded credentials):
-   ```
-   http://localhost:8080/podcast.xml?token=dev-feed-token
-   ```
-
-> **Note on Media Enclosures**: Some podcast clients do not pass Basic Auth headers when following media redirects. Podcaster automatically attaches `?token=...` to all enclosure and audio URLs within the RSS feed, guaranteeing uninterrupted playback.
-
-### App Setup Instructions
-
-- **Apple Podcasts**: Go to *Library* → Tap `…` (menu) → *Follow a Show by URL* → Paste the authenticated feed URL.
-- **Overcast**: Tap `+` → *Add URL* → Paste the authenticated feed URL.
-- **Pocket Casts**: Paste the URL directly into the *Search or enter URL* box in the Podcasts tab.
-
----
-
-## Agent & MCP Integration
-
-### REST API Usage
-
-#### Ingest Episode (`POST /v1/episodes`)
+The agent is the publisher. A listener never signs up — you create their show and send them the subscribe URL.
 
 ```bash
-curl -sS -X POST http://localhost:8080/v1/episodes \
+curl -sS -X POST http://localhost:8080/v1/podcasts \
   -H "Authorization: Bearer dev-agent-key" \
   -H "Content-Type: application/json" \
-  -d '{
-    "title": "Autonomous Daily Briefing",
-    "content": "All systems operating normally. Database backup completed at 04:00 UTC.",
-    "category": "Ops",
-    "voice_id": "en_US-lessac-medium"
-  }'
+  -d '{"id":"alice","title":"Alice Briefing","description":"Private updates for Alice"}'
 ```
 
-**Response (`202 Accepted`):**
-```json
-{
-  "episode_id": "ep_01ja2b3c4d5e6f",
-  "status": "QUEUED",
-  "created_at": "2026-09-26T13:30:00Z"
-}
-```
+Response includes `username`, `password`, `token`, `feed_url`, and `subscribe_url`. Store the password; it is also in the metadata store (SQLite / Firestore) and can be read again with `GET /v1/podcasts/alice`.
 
-#### Poll Status (`GET /v1/episodes/{id}`)
+Publish only to that feed:
 
 ```bash
-curl -sS http://localhost:8080/v1/episodes/ep_01ja2b3c4d5e6f \
-  -H "Authorization: Bearer dev-agent-key"
+curl -sS -X POST http://localhost:8080/v1/podcasts/alice/episodes \
+  -H "Authorization: Bearer dev-agent-key" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Morning","content":"Good morning Alice. Here is your briefing."}'
 ```
 
-**Response (`200 OK`):**
-```json
-{
-  "episode_id": "ep_01ja2b3c4d5e6f",
-  "title": "Autonomous Daily Briefing",
-  "status": "READY",
-  "category": "Ops",
-  "voice_id": "en_US-lessac-medium",
-  "duration_seconds": 18.5,
-  "file_size_bytes": 296320,
-  "created_at": "2026-09-26T13:30:00Z",
-  "published_at": "2026-09-26T13:30:04Z"
-}
-```
+Alice's app uses `http://alice:PASSWORD@localhost:8080/p/alice/podcast.xml`. Bob cannot read it. Episodes with a `podcast_id` never appear on the default `/podcast.xml`.
 
-Status transitions: `QUEUED` → `PROCESSING` → `READY` (or `FAILED`).
+Full schemas: [docs/api.md](docs/api.md).
 
 ---
 
-### Claude Desktop & Claude Code Configuration
+## Subscribe in a podcast app
 
-Podcaster implements the standard **Model Context Protocol (MCP)** over Streamable HTTP at `/mcp`.
+Private feeds need credentials. Use the **subscribe URL** from show creation (embedded Basic auth).
 
-Add this server configuration to your `claude_desktop_config.json`:
+```
+https://alice:PASSWORD@host/p/alice/podcast.xml
+```
+
+Default show (env `FEED_*`):
+
+```
+https://FEED_USERNAME:FEED_PASSWORD@host/podcast.xml
+```
+
+Locally that is `http://podcast:podcast@localhost:8080/podcast.xml`.
+
+Players that reject `user:pass@host` can use `?token=` instead (`FEED_TOKEN` on the default show, or the show's `token` on `/p/{id}/...`). Enclosure URLs in the RSS already include that token so clients that do not replay Basic auth on media still play. **Sharing one episode link leaks that show's token.**
+
+- **Apple Podcasts**: Library → `…` → Follow a Show by URL
+- **Overcast**: `+` → Add URL
+- **Pocket Casts**: Search or enter URL
+
+Channel includes `<itunes:block>yes</itunes:block>` so public directories should not index it.
+
+---
+
+## Agent / MCP
+
+Streamable HTTP at `/mcp`, same Bearer token as REST.
+
+Claude Desktop / Claude Code (`claude_desktop_config.json`):
 
 ```json
 {
@@ -231,148 +159,88 @@ Add this server configuration to your `claude_desktop_config.json`:
 }
 ```
 
-For production deployments over HTTPS:
+In production, use `https://YOUR_SERVICE/mcp` and the real `AGENT_API_KEY`.
 
-```json
-{
-  "mcpServers": {
-    "podcaster": {
-      "url": "https://podcast.example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_AGENT_API_KEY"
-      }
-    }
-  }
-}
-```
+| Tool | What |
+| --- | --- |
+| `create_podcast` | Create a private show. Returns username, password, token, feed URL. |
+| `publish_agent_update` | Queue an episode. Optional `podcast_id` (empty = default feed). |
+| `get_episode_status` | `QUEUED` → `PROCESSING` → `READY` or `FAILED`. |
 
-### Available MCP Tools
-
-Agents connected via MCP have access to the following tools:
-
-| Tool Name | Parameters | Description |
-| --- | --- | --- |
-| `publish_agent_update` | `title` *(string, required)*<br>`content` *(string, required)*<br>`category` *(string, optional)*<br>`voice_id` *(string, optional)* | Submits a new text update to be synthesized and queued for the podcast feed. Returns the assigned `episode_id`. |
-| `get_episode_status` | `episode_id` *(string, required)* | Retrieves the current synthesis status (`QUEUED`, `PROCESSING`, `READY`, `FAILED`), duration, and timestamps. |
+REST equivalents: `POST /v1/podcasts`, `POST /v1/podcasts/{id}/episodes`, `GET /v1/episodes/{id}`.
 
 ---
 
-## Pluggable Architecture
+## Configuration
 
-Podcaster separates the control plane and data plane, allowing components to be swapped cleanly between local development and production GCP environments:
-
-| Component | Local Dev (`default`) | Production GCP |
-| --- | --- | --- |
-| **Control Plane** | `cmd/server` (local HTTP) | Cloud Run Service |
-| **Worker / Data Plane** | In-process goroutine / local worker | Cloud Run Job (ephemeral execution) |
-| **Metadata Store** | SQLite (`data/podcaster.db`) | Google Cloud Firestore |
-| **Object Storage** | Local directory (`data/`) | Google Cloud Storage (GCS) |
-| **TTS Engine** | Mock tone generator (zero dependency) | Piper ONNX (fast neural CPU synthesis) |
-
----
-
-## Configuration Reference
-
-Configure Podcaster via environment variables or a `.env` file (see `.env.example`).
-
-### Server & Network
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `LISTEN_ADDR` | `:8080` | Bind address (if unset, Cloud Run `PORT` is used) |
-| `PUBLIC_BASE_URL` | `http://localhost:8080` | Origin URL used in RSS enclosures and artwork links |
-| `SHUTDOWN_TIMEOUT`| `25s` | Graceful HTTP shutdown window |
-
-### Authentication & Secrets
-
-| Variable | Default (Dev Mode) | Description |
-| --- | --- | --- |
-| `AGENT_API_KEY` | `dev-agent-key` | Bearer token required for REST ingest & MCP tools |
-| `FEED_USERNAME` | `podcast` | HTTP Basic Auth username for feed & audio |
-| `FEED_PASSWORD` | `podcast` | HTTP Basic Auth password for feed & audio |
-| `FEED_TOKEN` | `dev-feed-token` | Query token fallback for feed & enclosure requests |
-| `PODCASTER_DEV` | unset | Set to `1` to allow development defaults |
-
-> ⚠️ **Security Warning**: Local development default credentials (`dev-agent-key`, `podcast`/`podcast`) are rejected in production backends (`firestore`, `gcs`, or `cloudrun`). Always set strong secrets in production!
-
-### Backends & TTS
-
-| Variable | Default | Allowed Values / Description |
-| --- | --- | --- |
-| `STORE_BACKEND` | `sqlite` | `sqlite` or `firestore` |
-| `SQLITE_PATH` | `data/podcaster.db` | File path for SQLite database |
-| `STORAGE_BACKEND`| `local` | `local` or `gcs` |
-| `LOCAL_DATA_DIR` | `data` | Directory for local audio files |
-| `GCS_BUCKET` | *(none)* | GCP bucket name (required when `STORAGE_BACKEND=gcs`) |
-| `JOB_BACKEND` | `local` | `local` or `cloudrun` |
-| `TTS_ENGINE` | `mock` | `mock` or `piper` |
-| `PIPER_BIN` | `piper` | Path to Piper binary |
-| `PIPER_MODEL` | *(none)* | Path to `.onnx` voice model (required for Piper) |
-| `PIPER_CONFIG` | *(none)* | Path to `.onnx.json` model config file |
-| `FFMPEG_BIN` | `ffmpeg` | Path to ffmpeg binary |
-| `DEFAULT_VOICE` | `en_US-lessac-medium` | Default voice identifier |
-
-### Podcast Metadata
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `PODCAST_TITLE` | `Private Agent Briefing` | Feed channel title |
-| `PODCAST_DESCRIPTION` | *(standard description)* | Feed channel description |
-| `PODCAST_AUTHOR` | `Podcaster` | `itunes:author` |
-| `PODCAST_LANGUAGE` | `en-us` | RSS `<language>` code |
-| `PODCAST_CATEGORY` | `Technology` | Primary `itunes:category` |
-| `PODCAST_IMAGE_FILE` | *(none)* | Custom 1400x1400 PNG path (generated if omitted) |
-
----
-
-## Production Deployment (GCP)
-
-Podcaster is designed to run serverlessly on Google Cloud Platform:
-
-1. **Cloud Run Service (`cmd/server`)**: Handles REST ingest, MCP connections, and feeds the protected RSS/MP3 streams.
-2. **Cloud Run Job (`cmd/worker`)**: Triggered per episode to execute Piper TTS + ffmpeg in an isolated, autoscaling task container.
-3. **Firestore**: Persists episode states and metadata with atomic conditional updates.
-4. **Cloud Storage**: Secure private bucket hosting synthesized MP3 enclosures.
-5. **Secret Manager**: Securely mounts `AGENT_API_KEY`, `FEED_PASSWORD`, and other credentials.
-
-Deployment descriptors and configurations are located in `deploy/`:
-- `deploy/cloudbuild.yaml` — Multi-target image build
-- `deploy/cloudrun-service.yaml` — Control plane service definition
-- `deploy/cloudrun-job.yaml` — Audio synthesis worker job
-- `deploy/firestore.indexes.json` — Composite Firestore indexes
-
-See [docs/deployment.md](docs/deployment.md) for step-by-step setup and IAM permission details.
-
----
-
-## Development Commands
-
-All common tasks are encapsulated in the `Makefile`:
+All settings are **process environment variables**. The binary does not load `.env`. `.env.example` is a checklist. To use a file locally:
 
 ```bash
-make build       # Compile server and worker binaries into bin/
-make test        # Run unit and integration tests
-make vet         # Run go vet static analysis
-make fmt         # Format source code
-make tidy        # Clean up go.mod and go.sum dependencies
-make run         # Build and launch server locally with mock backends
-make smoke       # Run end-to-end ingestion and RSS smoke test
-make docker-up   # Start local instance via docker compose
-make docker-down # Stop docker compose services
-make clean       # Remove built binaries
+set -a && source .env && set +a
+make build
+./bin/server
+```
+
+| Variable | Local default | Notes |
+| --- | --- | --- |
+| `AGENT_API_KEY` | `dev-agent-key` | Bearer for REST + MCP |
+| `FEED_USERNAME` / `FEED_PASSWORD` | `podcast` / `podcast` | Default show only |
+| `FEED_TOKEN` | `dev-feed-token` | Default show `?token=` |
+| `PUBLIC_BASE_URL` | `http://localhost:8080` | Absolute links in RSS. Must be the URL listeners use. |
+| `STORE_BACKEND` | `sqlite` | `firestore` in GCP |
+| `STORAGE_BACKEND` | `local` | `gcs` in GCP |
+| `JOB_BACKEND` | `local` | `cloudrun` on the **service** only |
+| `TTS_ENGINE` | `mock` | `piper` on the **worker** image |
+| `CLOUD_RUN_JOB_NAME` | — | Job name. Do not set `CLOUD_RUN_JOB` on a Cloud Run Service (reserved). |
+| `GCP_PROJECT` / `GCS_BUCKET` | — | Required for Firestore / GCS |
+
+`Validate()` only checks that secrets are **non-empty**. `dev-agent-key` / `podcast` are accepted even with Firestore and GCS. Generate real secrets for production (the bootstrap script does).
+
+Full table: [docs/deployment.md](docs/deployment.md).
+
+---
+
+## Production (GCP)
+
+Do not start from `deploy/cloudrun-*.yaml` — those files are comments plus placeholders. Follow **[docs/deployment.md](docs/deployment.md)** in order:
+
+1. Existing GCP project with **billing** and a principal that can grant IAM (typically Owner).
+2. `./deploy/bootstrap-gcp.sh` — APIs, Artifact Registry, Firestore + indexes, bucket, runtime SA, secrets, Cloud Build IAM.
+3. `gcloud builds submit` — server (distroless) and worker (Debian + Piper + ffmpeg).
+4. Deploy the **Job** first, then the **Service**.
+5. Pin `PUBLIC_BASE_URL` to the service URL you will actually subscribe with.
+6. Create a show, publish an episode, subscribe.
+
+If `--allow-unauthenticated` fails with `iam.allowedPolicyMemberDomains`, use `--no-invoker-iam-check` (documented in the runbook). Public `/healthz` may then be Google-frontend HTML; `/readyz` is the app probe.
+
+---
+
+## Development commands
+
+```bash
+make build        # bin/server and bin/worker
+make test
+make vet
+make fmt
+make tidy
+make run          # local defaults, mock TTS
+make smoke        # ingest + RSS against localhost:8080
+make docker-up
+make docker-down
+make clean
 ```
 
 ---
 
-## Documentation Index
+## Documentation
 
-- [Product Specification](docs/spec.md) — Functional requirements and design scope
-- [Architecture Details](docs/architecture.md) — Split-plane topology, storage schema, and CAS lifecycle
-- [API Reference](docs/api.md) — Full REST schemas, error codes, and MCP tool protocols
-- [Deployment Guide](docs/deployment.md) — Production GCP infrastructure and environment setup
+- [docs/deployment.md](docs/deployment.md) — GCP from an empty project (the runbook)
+- [docs/api.md](docs/api.md) — REST, RSS, MCP
+- [docs/architecture.md](docs/architecture.md) — control/data plane, CAS, storage
+- [docs/spec.md](docs/spec.md) — scope and non-goals
 
 ---
 
 ## License
 
-This project is licensed under the Apache 2.0 License. See the [LICENSE](LICENSE) file for details.
+Apache 2.0. See [LICENSE](LICENSE).

@@ -87,7 +87,7 @@ func FromEnv() (*Config, error) {
 		LocalDataDir:       env("LOCAL_DATA_DIR", "data"),
 		GCSBucket:          os.Getenv("GCS_BUCKET"),
 		JobBackend:         strings.ToLower(env("JOB_BACKEND", BackendLocal)),
-		CloudRunJob:        os.Getenv("CLOUD_RUN_JOB"),
+		CloudRunJob:        first(os.Getenv("CLOUD_RUN_JOB_NAME"), os.Getenv("CLOUD_RUN_JOB")),
 		CloudRunRegion:     env("CLOUD_RUN_REGION", "us-central1"),
 		WorkerTimeout:      envDuration("WORKER_TIMEOUT", 30*time.Minute),
 		ShutdownTimeout:    envDuration("SHUTDOWN_TIMEOUT", 25*time.Second),
@@ -188,7 +188,7 @@ func (c *Config) Validate() error {
 	case BackendLocal:
 	case BackendCloudRun:
 		if c.CloudRunJob == "" || c.GCPProject == "" {
-			return fmt.Errorf("CLOUD_RUN_JOB and GCP_PROJECT are required when JOB_BACKEND=cloudrun")
+			return fmt.Errorf("CLOUD_RUN_JOB_NAME and GCP_PROJECT are required when JOB_BACKEND=cloudrun")
 		}
 	default:
 		return fmt.Errorf("unknown JOB_BACKEND %q (local|cloudrun)", c.JobBackend)

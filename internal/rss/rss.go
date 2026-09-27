@@ -29,6 +29,8 @@ type ItemOptions struct {
 	BaseURL string
 	// Token, if set, is appended to enclosure URLs as ?token=.
 	Token string
+	// AudioPath is the enclosure directory, default "/audio".
+	AudioPath string
 }
 
 type rss struct {
@@ -122,7 +124,11 @@ func Build(ch Channel, episodes []*episode.Episode, opt ItemOptions) ([]byte, er
 		if strings.Contains(ct, "wav") {
 			ext = "wav"
 		}
-		encURL := strings.TrimRight(opt.BaseURL, "/") + "/audio/" + ep.ID + "." + ext
+		audioPath := opt.AudioPath
+		if audioPath == "" {
+			audioPath = "/audio"
+		}
+		encURL := strings.TrimRight(opt.BaseURL, "/") + strings.TrimRight(audioPath, "/") + "/" + ep.ID + "." + ext
 		if opt.Token != "" {
 			encURL += "?token=" + opt.Token
 		}

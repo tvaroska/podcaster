@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/tvaroska/podcaster/internal/episode"
+	"github.com/tvaroska/podcaster/internal/podcast"
 )
 
 var (
@@ -21,6 +22,11 @@ type Store interface {
 	Update(ctx context.Context, ep *episode.Episode) error
 	CompareAndSwapStatus(ctx context.Context, id string, from, to episode.Status) (*episode.Episode, error)
 	Delete(ctx context.Context, id string) error
+
+	CreatePodcast(ctx context.Context, p *podcast.Podcast) error
+	GetPodcast(ctx context.Context, id string) (*podcast.Podcast, error)
+	ListPodcasts(ctx context.Context) ([]*podcast.Podcast, error)
+
 	Ping(ctx context.Context) error
 	Close() error
 }

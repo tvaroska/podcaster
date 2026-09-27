@@ -5,22 +5,25 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tvaroska/podcaster/internal/app"
 	"github.com/tvaroska/podcaster/internal/episode"
+	"github.com/tvaroska/podcaster/internal/podcast"
 	"github.com/tvaroska/podcaster/internal/store"
 )
 
 const Version = "0.1.0"
 
 type publishInput struct {
-	Title    string `json:"title" jsonschema:"Title of the podcast episode"`
-	Content  string `json:"content" jsonschema:"Plain text script or summary to convert to audio"`
-	Category string `json:"category,omitempty" jsonschema:"Update category, e.g. Daily Briefing or Urgent Alert"`
-	VoiceID  string `json:"voice_id,omitempty" jsonschema:"Optional Piper voice identifier such as en_US-lessac-medium"`
+	Title     string `json:"title" jsonschema:"Title of the podcast episode"`
+	Content   string `json:"content" jsonschema:"Plain text script or summary to convert to audio"`
+	Category  string `json:"category,omitempty" jsonschema:"Update category, e.g. Daily Briefing or Urgent Alert"`
+	VoiceID   string `json:"voice_id,omitempty" jsonschema:"Optional Piper voice identifier such as en_US-lessac-medium"`
+	PodcastID string `json:"podcast_id,omitempty" jsonschema:"Optional show id created with create_podcast. Empty publishes to the default feed."`
 }
 
 type publishOutput struct {
@@ -56,10 +59,11 @@ func NewServer(a *app.App) *mcpsdk.Server {
 		Description: "Queue a new private podcast episode. The text is synthesized to audio asynchronously and appears in the authenticated RSS feed once READY.",
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in publishInput) (*mcpsdk.CallToolResult, publishOutput, error) {
 		ep, err := a.CreateEpisode(ctx, episode.CreateInput{
-			Title:    in.Title,
-			Content:  in.Content,
-			Category: in.Category,
-			VoiceID:  in.VoiceID,
+			Title:     in.Title,
+			Content:   in.Content,
+			Category:  in.Category,
+			VoiceID:   in.VoiceID,
+			PodcastID: in.PodcastID,
 		})
 		if err != nil {
 			var ve *episode.ValidationError
@@ -75,6 +79,64 @@ func NewServer(a *app.App) *mcpsdk.Server {
 			Status:    string(ep.PublicStatus()),
 			EpisodeID: ep.ID,
 			Message:   "Batch job initialized. Episode will appear in the feed once synthesis completes.",
+		}
+		body, _ := json.Marshal(out)
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: string(body)}},
+		}, out, nil
+	})
+
+	type createPodcastInput struct {
+		ID          string `json:"id" jsonschema:"URL slug for the show, e.g. alice. Lowercase letters, digits, hyphens."`
+		Title       string `json:"title" jsonschema:"Show title as it appears in podcast apps"`
+		Description string `json:"description,omitempty" jsonschema:"Optional RSS description"`
+		Author      string `json:"author,omitempty" jsonschema:"Optional itunes:author"`
+	}
+	type createPodcastOutput struct {
+		ID           string `json:"id"`
+		Title        string `json:"title"`
+		Username     string `json:"username"`
+		Password     string `json:"password"`
+		Token        string `json:"token"`
+		FeedURL      string `json:"feed_url"`
+		SubscribeURL string `json:"subscribe_url"`
+		Message      string `json:"message"`
+	}
+
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "create_podcast",
+		Description: "Create a private show for one listener. Returns unique Basic-auth credentials and a subscribe URL. Episodes published with this podcast_id appear only on that feed.",
+	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, in createPodcastInput) (*mcpsdk.CallToolResult, createPodcastOutput, error) {
+		p, err := a.CreatePodcast(ctx, podcast.CreateInput{
+			ID: in.ID, Title: in.Title, Description: in.Description, Author: in.Author,
+		})
+		if err != nil {
+			var ve *episode.ValidationError
+			if errors.As(err, &ve) {
+				return &mcpsdk.CallToolResult{
+					IsError: true,
+					Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: ve.Error()}},
+				}, createPodcastOutput{}, nil
+			}
+			if errors.Is(err, store.ErrAlreadyExists) {
+				return &mcpsdk.CallToolResult{
+					IsError: true,
+					Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "podcast already exists"}},
+				}, createPodcastOutput{}, nil
+			}
+			return nil, createPodcastOutput{}, err
+		}
+		feed := a.Cfg.PublicBaseURL + p.FeedPath()
+		subscribe := feed
+		if u, err := url.Parse(a.Cfg.PublicBaseURL); err == nil {
+			u.User = url.UserPassword(p.Username, p.Password)
+			u.Path = p.FeedPath()
+			subscribe = u.String()
+		}
+		out := createPodcastOutput{
+			ID: p.ID, Title: p.Title, Username: p.Username, Password: p.Password, Token: p.Token,
+			FeedURL: feed, SubscribeURL: subscribe,
+			Message: "Show created. Subscribe with the username and password, then publish episodes with this podcast_id.",
 		}
 		body, _ := json.Marshal(out)
 		return &mcpsdk.CallToolResult{

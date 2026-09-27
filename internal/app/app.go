@@ -12,6 +12,7 @@ import (
 	"github.com/tvaroska/podcaster/internal/config"
 	"github.com/tvaroska/podcaster/internal/episode"
 	"github.com/tvaroska/podcaster/internal/job"
+	"github.com/tvaroska/podcaster/internal/podcast"
 	"github.com/tvaroska/podcaster/internal/storage"
 	"github.com/tvaroska/podcaster/internal/store"
 	"github.com/tvaroska/podcaster/internal/tts"
@@ -50,9 +51,19 @@ func (a *App) CreateEpisode(ctx context.Context, in episode.CreateInput) (*episo
 	if in.VoiceID == "" {
 		in.VoiceID = a.Cfg.DefaultVoice
 	}
+	in.PodcastID = strings.ToLower(strings.TrimSpace(in.PodcastID))
+	if in.PodcastID != "" {
+		if _, err := a.Store.GetPodcast(ctx, in.PodcastID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, &episode.ValidationError{Field: "podcast_id", Message: "podcast not found"}
+			}
+			return nil, fmt.Errorf("load podcast: %w", err)
+		}
+	}
 	now := time.Now().UTC()
 	ep := &episode.Episode{
 		ID:         episode.NewID(),
+		PodcastID:  in.PodcastID,
 		Title:      in.Title,
 		ScriptText: in.Content,
 		Category:   in.Category,
@@ -69,8 +80,44 @@ func (a *App) CreateEpisode(ctx context.Context, in episode.CreateInput) (*episo
 		_ = a.Store.Update(ctx, ep)
 		return nil, fmt.Errorf("enqueue job: %w", err)
 	}
-	a.logger().Info("episode queued", "episode_id", ep.ID, "title", ep.Title)
+	a.logger().Info("episode queued", "episode_id", ep.ID, "title", ep.Title, "podcast_id", ep.PodcastID)
 	return ep, nil
+}
+
+// CreatePodcast registers a private show with its own feed credentials.
+func (a *App) CreatePodcast(ctx context.Context, in podcast.CreateInput) (*podcast.Podcast, error) {
+	in.ID = strings.ToLower(strings.TrimSpace(in.ID))
+	in.Title = strings.TrimSpace(in.Title)
+	in.Description = strings.TrimSpace(in.Description)
+	in.Author = strings.TrimSpace(in.Author)
+	if err := podcast.ValidateCreate(in); err != nil {
+		return nil, err
+	}
+	password, token, err := podcast.NewSecrets()
+	if err != nil {
+		return nil, fmt.Errorf("generate credentials: %w", err)
+	}
+	p := &podcast.Podcast{
+		ID:          in.ID,
+		Title:       in.Title,
+		Description: in.Description,
+		Author:      in.Author,
+		Username:    in.ID,
+		Password:    password,
+		Token:       token,
+		CreatedAt:   time.Now().UTC(),
+	}
+	if p.Author == "" {
+		p.Author = a.Cfg.PodcastAuthor
+	}
+	if p.Description == "" {
+		p.Description = a.Cfg.PodcastDescription
+	}
+	if err := a.Store.CreatePodcast(ctx, p); err != nil {
+		return nil, fmt.Errorf("persist podcast: %w", err)
+	}
+	a.logger().Info("podcast created", "podcast_id", p.ID)
+	return p, nil
 }
 
 // Reconcile sweeps the store for stranded episodes across server restarts or worker crashes.

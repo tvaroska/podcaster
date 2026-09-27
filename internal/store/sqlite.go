@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tvaroska/podcaster/internal/episode"
+	"github.com/tvaroska/podcaster/internal/podcast"
 
 	_ "modernc.org/sqlite"
 )
@@ -33,6 +34,16 @@ CREATE TABLE IF NOT EXISTS episodes (
 );
 CREATE INDEX IF NOT EXISTS idx_episodes_created_at ON episodes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status);
+CREATE TABLE IF NOT EXISTS podcasts (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    author TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL,
+    password TEXT NOT NULL,
+    token TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 `
 
 type SQLite struct {
@@ -58,16 +69,24 @@ func OpenSQLite(path string) (*SQLite, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate sqlite: %w", err)
 	}
+	if err := ensureColumn(db, "episodes", "podcast_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate sqlite podcast_id: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_episodes_podcast ON episodes(podcast_id, created_at DESC)`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return &SQLite{db: db}, nil
 }
 
 func (s *SQLite) Create(ctx context.Context, ep *episode.Episode) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO episodes (
-    id, title, script_text, category, voice_id, status, audio_uri,
+    id, podcast_id, title, script_text, category, voice_id, status, audio_uri,
     duration_seconds, file_size_bytes, content_type, error_message, created_at, published_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ep.ID, ep.Title, ep.ScriptText, ep.Category, ep.VoiceID, string(ep.Status), ep.AudioURI,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ep.ID, ep.PodcastID, ep.Title, ep.ScriptText, ep.Category, ep.VoiceID, string(ep.Status), ep.AudioURI,
 		ep.DurationSeconds, ep.FileSizeBytes, ep.ContentType, ep.ErrorMessage,
 		ep.CreatedAt.UTC().Format(time.RFC3339Nano), formatTimePtr(ep.PublishedAt),
 	)
@@ -101,13 +120,23 @@ func (s *SQLite) List(ctx context.Context, f episode.ListFilter) ([]*episode.Epi
 
 	q := `SELECT ` + episodeColumns + ` FROM episodes`
 	args := []any{}
+	var wheres []string
 	if f.Status != "" {
 		status := f.Status
 		if status == episode.StatusQueued {
 			status = episode.StatusPending
 		}
-		q += ` WHERE status = ?`
+		wheres = append(wheres, `status = ?`)
 		args = append(args, string(status))
+	}
+	if f.OnlyDefault {
+		wheres = append(wheres, `podcast_id = ''`)
+	} else if f.PodcastID != "" {
+		wheres = append(wheres, `podcast_id = ?`)
+		args = append(args, f.PodcastID)
+	}
+	if len(wheres) > 0 {
+		q += ` WHERE ` + strings.Join(wheres, ` AND `)
 	}
 	q += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
@@ -132,10 +161,10 @@ func (s *SQLite) List(ctx context.Context, f episode.ListFilter) ([]*episode.Epi
 func (s *SQLite) Update(ctx context.Context, ep *episode.Episode) error {
 	res, err := s.db.ExecContext(ctx, `
 UPDATE episodes SET
-    title=?, script_text=?, category=?, voice_id=?, status=?, audio_uri=?,
+    podcast_id=?, title=?, script_text=?, category=?, voice_id=?, status=?, audio_uri=?,
     duration_seconds=?, file_size_bytes=?, content_type=?, error_message=?, published_at=?
 WHERE id=?`,
-		ep.Title, ep.ScriptText, ep.Category, ep.VoiceID, string(ep.Status), ep.AudioURI,
+		ep.PodcastID, ep.Title, ep.ScriptText, ep.Category, ep.VoiceID, string(ep.Status), ep.AudioURI,
 		ep.DurationSeconds, ep.FileSizeBytes, ep.ContentType, ep.ErrorMessage,
 		formatTimePtr(ep.PublishedAt), ep.ID,
 	)
@@ -185,7 +214,7 @@ func (s *SQLite) Close() error {
 	return s.db.Close()
 }
 
-const episodeColumns = `id, title, script_text, category, voice_id, status, audio_uri, duration_seconds, file_size_bytes, content_type, error_message, created_at, published_at`
+const episodeColumns = `id, podcast_id, title, script_text, category, voice_id, status, audio_uri, duration_seconds, file_size_bytes, content_type, error_message, created_at, published_at`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -201,7 +230,7 @@ func scanEpisode(row rowScanner) (*episode.Episode, error) {
 		fileSize  int64
 	)
 	err := row.Scan(
-		&ep.ID, &ep.Title, &ep.ScriptText, &ep.Category, &ep.VoiceID, &status, &ep.AudioURI,
+		&ep.ID, &ep.PodcastID, &ep.Title, &ep.ScriptText, &ep.Category, &ep.VoiceID, &status, &ep.AudioURI,
 		&duration, &fileSize, &ep.ContentType, &ep.ErrorMessage, &created, &published,
 	)
 	if err != nil {
@@ -230,6 +259,94 @@ func scanEpisode(row rowScanner) (*episode.Episode, error) {
 		ep.PublishedAt = &pt
 	}
 	return &ep, nil
+}
+
+func (s *SQLite) CreatePodcast(ctx context.Context, p *podcast.Podcast) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO podcasts (id, title, description, author, username, password, token, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Title, p.Description, p.Author, p.Username, p.Password, p.Token,
+		p.CreatedAt.UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return ErrAlreadyExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLite) GetPodcast(ctx context.Context, id string) (*podcast.Podcast, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, title, description, author, username, password, token, created_at
+FROM podcasts WHERE id = ?`, id)
+	p, err := scanPodcast(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return p, err
+}
+
+func (s *SQLite) ListPodcasts(ctx context.Context) ([]*podcast.Podcast, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, title, description, author, username, password, token, created_at
+FROM podcasts ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*podcast.Podcast
+	for rows.Next() {
+		p, err := scanPodcast(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func scanPodcast(row rowScanner) (*podcast.Podcast, error) {
+	var p podcast.Podcast
+	var created string
+	if err := row.Scan(&p.ID, &p.Title, &p.Description, &p.Author, &p.Username, &p.Password, &p.Token, &created); err != nil {
+		return nil, err
+	}
+	t, err := time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339, created)
+		if err != nil {
+			return nil, fmt.Errorf("parse podcast created_at: %w", err)
+		}
+	}
+	p.CreatedAt = t.UTC()
+	return &p, nil
+}
+
+func ensureColumn(db *sql.DB, table, col, decl string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == col {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + col + ` ` + decl)
+	return err
 }
 
 func formatTimePtr(t *time.Time) any {

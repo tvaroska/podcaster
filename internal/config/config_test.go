@@ -72,3 +72,26 @@ func TestValidateProduction(t *testing.T) {
 		t.Fatalf("unexpected: %v", err)
 	}
 }
+
+func TestCloudRunJobNameEnv(t *testing.T) {
+	t.Setenv("AGENT_API_KEY", "k")
+	t.Setenv("FEED_USERNAME", "u")
+	t.Setenv("FEED_PASSWORD", "p")
+	t.Setenv("STORE_BACKEND", "firestore")
+	t.Setenv("STORAGE_BACKEND", "gcs")
+	t.Setenv("JOB_BACKEND", "cloudrun")
+	t.Setenv("TTS_ENGINE", "mock")
+	t.Setenv("GCP_PROJECT", "demo")
+	t.Setenv("GCS_BUCKET", "bucket")
+	t.Setenv("CLOUD_RUN_JOB", "") // reserved on Cloud Run; must not be required
+	t.Setenv("CLOUD_RUN_JOB_NAME", "podcaster-worker")
+	t.Setenv("CLOUD_RUN_REGION", "us-central1")
+
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if c.CloudRunJob != "podcaster-worker" {
+		t.Fatalf("CloudRunJob=%q", c.CloudRunJob)
+	}
+}

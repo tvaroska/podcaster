@@ -16,6 +16,7 @@ const (
 // Episode is a single podcast item: source script plus synthesized audio metadata.
 type Episode struct {
 	ID              string     `json:"episode_id"`
+	PodcastID       string     `json:"podcast_id,omitempty"`
 	Title           string     `json:"title"`
 	ScriptText      string     `json:"script_text,omitempty"`
 	Category        string     `json:"category,omitempty"`
@@ -32,17 +33,20 @@ type Episode struct {
 
 // CreateInput is the agent-facing payload used to enqueue a new episode.
 type CreateInput struct {
-	Title    string `json:"title"`
-	Content  string `json:"content"`
-	Category string `json:"category,omitempty"`
-	VoiceID  string `json:"voice_id,omitempty"`
+	Title     string `json:"title"`
+	Content   string `json:"content"`
+	Category  string `json:"category,omitempty"`
+	VoiceID   string `json:"voice_id,omitempty"`
+	PodcastID string `json:"podcast_id,omitempty"`
 }
 
 // ListFilter controls listing and pagination.
 type ListFilter struct {
-	Status Status
-	Limit  int
-	Offset int
+	Status      Status
+	PodcastID   string
+	OnlyDefault bool
+	Limit       int
+	Offset      int
 }
 
 // PublicStatus maps internal PENDING onto the documented QUEUED value.

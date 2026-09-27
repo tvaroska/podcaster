@@ -299,3 +299,125 @@ func TestAudioSignedURLRedirect(t *testing.T) {
 		t.Fatalf("unexpected redirect location: %s", loc)
 	}
 }
+
+func TestPerUserPodcastIsolation(t *testing.T) {
+	_, _, h := testApp(t)
+	agent := func(method, path, body string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		req.Header.Set("Authorization", "Bearer secret-key")
+		h.ServeHTTP(rr, req)
+		return rr
+	}
+
+	rr := agent(http.MethodPost, "/v1/podcasts", `{"id":"alice","title":"Alice Briefing"}`)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create alice %d %s", rr.Code, rr.Body.String())
+	}
+	var alice map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &alice); err != nil {
+		t.Fatal(err)
+	}
+	rr = agent(http.MethodPost, "/v1/podcasts", `{"id":"bob","title":"Bob Briefing"}`)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create bob %d %s", rr.Code, rr.Body.String())
+	}
+	var bob map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &bob)
+
+	payload := `{"title":"Hello Alice","content":"Good morning Alice. This is your private briefing for today."}`
+	rr = agent(http.MethodPost, "/v1/podcasts/alice/episodes", payload)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("ep alice %d %s", rr.Code, rr.Body.String())
+	}
+	var created struct {
+		EpisodeID string `json:"episode_id"`
+		PodcastID string `json:"podcast_id"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &created)
+	if created.PodcastID != "alice" {
+		t.Fatalf("podcast_id %q", created.PodcastID)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		gr := agent(http.MethodGet, "/v1/episodes/"+created.EpisodeID, "")
+		var got map[string]any
+		_ = json.Unmarshal(gr.Body.Bytes(), &got)
+		if got["status"] == "READY" {
+			break
+		}
+		if got["status"] == "FAILED" {
+			t.Fatalf("failed %v", got)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	aliceUser, _ := alice["username"].(string)
+	alicePass, _ := alice["password"].(string)
+	aliceTok, _ := alice["token"].(string)
+	bobUser, _ := bob["username"].(string)
+	bobPass, _ := bob["password"].(string)
+
+	feedReq := httptest.NewRequest(http.MethodGet, "/p/alice/podcast.xml", nil)
+	feedReq.SetBasicAuth(aliceUser, alicePass)
+	feedRR := httptest.NewRecorder()
+	h.ServeHTTP(feedRR, feedReq)
+	if feedRR.Code != 200 {
+		t.Fatalf("alice feed %d %s", feedRR.Code, feedRR.Body.String())
+	}
+	xml := feedRR.Body.String()
+	if !strings.Contains(xml, created.EpisodeID) || !strings.Contains(xml, "Alice Briefing") {
+		t.Fatalf("alice feed missing episode:\n%s", xml)
+	}
+	if !strings.Contains(xml, "/p/alice/audio/"+created.EpisodeID+".mp3?token="+aliceTok) {
+		t.Fatalf("enclosure path:\n%s", xml)
+	}
+
+	// Bob cannot read Alice's feed
+	bad := httptest.NewRequest(http.MethodGet, "/p/alice/podcast.xml", nil)
+	bad.SetBasicAuth(bobUser, bobPass)
+	badRR := httptest.NewRecorder()
+	h.ServeHTTP(badRR, bad)
+	if badRR.Code != http.StatusUnauthorized {
+		t.Fatalf("bob reading alice feed: %d", badRR.Code)
+	}
+
+	// Default feed must not include Alice's episode
+	defReq := httptest.NewRequest(http.MethodGet, "/podcast.xml", nil)
+	defReq.SetBasicAuth("podcast", "s3cret")
+	defRR := httptest.NewRecorder()
+	h.ServeHTTP(defRR, defReq)
+	if defRR.Code != 200 {
+		t.Fatalf("default feed %d", defRR.Code)
+	}
+	if strings.Contains(defRR.Body.String(), created.EpisodeID) {
+		t.Fatalf("default feed leaked alice episode")
+	}
+
+	// Bob cannot fetch Alice audio
+	audio := httptest.NewRequest(http.MethodGet, "/p/alice/audio/"+created.EpisodeID+".mp3?token="+aliceTok, nil)
+	audioRR := httptest.NewRecorder()
+	h.ServeHTTP(audioRR, audio)
+	if audioRR.Code != 200 {
+		t.Fatalf("alice audio %d %s", audioRR.Code, audioRR.Body.String())
+	}
+	bobAudio := httptest.NewRequest(http.MethodGet, "/p/bob/audio/"+created.EpisodeID+".mp3", nil)
+	bobAudio.SetBasicAuth(bobUser, bobPass)
+	bobRR := httptest.NewRecorder()
+	h.ServeHTTP(bobRR, bobAudio)
+	if bobRR.Code != http.StatusNotFound && bobRR.Code != http.StatusUnauthorized {
+		t.Fatalf("bob audio of alice ep: %d", bobRR.Code)
+	}
+
+	// Global audio path must not serve per-user episodes
+	glob := httptest.NewRequest(http.MethodGet, "/audio/"+created.EpisodeID+".mp3?token=feed-token", nil)
+	globRR := httptest.NewRecorder()
+	h.ServeHTTP(globRR, glob)
+	if globRR.Code != http.StatusNotFound {
+		t.Fatalf("global audio leaked: %d", globRR.Code)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/tvaroska/podcaster/internal/episode"
+	"github.com/tvaroska/podcaster/internal/podcast"
 )
 
 func TestSQLiteCRUD(t *testing.T) {
@@ -74,5 +75,45 @@ func TestSQLiteCRUD(t *testing.T) {
 	}
 	if _, err := s.Get(ctx, ep.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected not found after delete, got %v", err)
+	}
+}
+
+func TestSQLitePodcastIsolation(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	now := time.Now().UTC()
+	alice := &podcast.Podcast{ID: "alice", Title: "Alice", Username: "alice", Password: "a", Token: "ta", CreatedAt: now}
+	if err := s.CreatePodcast(ctx, alice); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreatePodcast(ctx, alice); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("dup: %v", err)
+	}
+	got, err := s.GetPodcast(ctx, "alice")
+	if err != nil || got.Title != "Alice" {
+		t.Fatalf("get %+v %v", got, err)
+	}
+
+	a := &episode.Episode{ID: "ep_a", PodcastID: "alice", Title: "A", ScriptText: "hello", Status: episode.StatusReady, CreatedAt: now}
+	b := &episode.Episode{ID: "ep_b", PodcastID: "bob", Title: "B", ScriptText: "hello", Status: episode.StatusReady, CreatedAt: now}
+	def := &episode.Episode{ID: "ep_d", Title: "D", ScriptText: "hello", Status: episode.StatusReady, CreatedAt: now}
+	for _, ep := range []*episode.Episode{a, b, def} {
+		if err := s.Create(ctx, ep); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	list, err := s.List(ctx, episode.ListFilter{PodcastID: "alice", Status: episode.StatusReady, Limit: 10})
+	if err != nil || len(list) != 1 || list[0].ID != "ep_a" {
+		t.Fatalf("alice list %+v %v", list, err)
+	}
+	list, err = s.List(ctx, episode.ListFilter{OnlyDefault: true, Status: episode.StatusReady, Limit: 10})
+	if err != nil || len(list) != 1 || list[0].ID != "ep_d" {
+		t.Fatalf("default list %+v %v", list, err)
 	}
 }

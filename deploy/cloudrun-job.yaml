@@ -1,4 +1,5 @@
-# Deploy:
+# Template / comments only. Deploy with gcloud, not kubectl apply:
+#
 # gcloud run jobs deploy podcaster-worker \
 #   --image=$REGION-docker.pkg.dev/$PROJECT/podcaster/worker:latest \
 #   --region=$REGION \
@@ -8,10 +9,12 @@
 #   --task-timeout=30m \
 #   --cpu=2 \
 #   --memory=2Gi \
-#   --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=cloudrun,TTS_ENGINE=piper,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET,CLOUD_RUN_JOB=podcaster-worker,CLOUD_RUN_REGION=$REGION \
+#   --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=local,TTS_ENGINE=piper,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET \
 #   --set-secrets=AGENT_API_KEY=agent-api-key:latest,FEED_USERNAME=feed-username:latest,FEED_PASSWORD=feed-password:latest
 #
+# JOB_BACKEND=local is required on the worker (it never enqueues).
 # The control plane injects EPISODE_ID per execution via RunJob overrides.
+# PIPER_* are already set in the worker image.
 apiVersion: run.googleapis.com/v1
 kind: Job
 metadata:
@@ -32,6 +35,8 @@ spec:
                   value: firestore
                 - name: STORAGE_BACKEND
                   value: gcs
+                - name: JOB_BACKEND
+                  value: local
                 - name: TTS_ENGINE
                   value: piper
               resources:

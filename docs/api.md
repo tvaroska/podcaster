@@ -14,22 +14,57 @@ Missing or incorrect keys return `401` with `{"error":"invalid or missing bearer
 
 ### Listener (feed + audio)
 
-Either:
+Each **show** has its own credentials. Failed listener auth returns `401` plus `WWW-Authenticate: Basic realm="Private Podcast"`.
 
-- HTTP Basic Auth with `FEED_USERNAME` / `FEED_PASSWORD`, or
-- query parameter `?token=<FEED_TOKEN>`.
+**Default show** (`/podcast.xml`, `/audio/...`) uses `FEED_USERNAME` / `FEED_PASSWORD` / `FEED_TOKEN`.
 
-Failed listener auth returns `401` plus `WWW-Authenticate: Basic realm="Private Podcast"`.
+**Per-user show** (`/p/{id}/podcast.xml`, `/p/{id}/audio/...`) uses the username, password, and token returned when the show was created. Alice cannot read Bob's feed or audio.
 
-Subscribe in Overcast / Pocket Casts / Apple Podcasts with:
+Subscribe:
 
 ```
-https://FEED_USERNAME:FEED_PASSWORD@host/podcast.xml
+https://USERNAME:PASSWORD@host/p/alice/podcast.xml
 ```
 
-Enclosure URLs in the feed already include `?token=` so clients that do not replay Basic Auth on media still play.
+Enclosure URLs already include that show's `?token=` so clients that do not replay Basic Auth on media still play. Tokens are **not** shared across shows.
 
 ## REST
+
+### `POST /v1/podcasts`
+
+Create a private show for one listener. The agent is the publisher; the listener only gets a feed URL.
+
+```http
+POST /v1/podcasts HTTP/1.1
+Authorization: Bearer <AGENT_API_KEY>
+Content-Type: application/json
+
+{"id":"alice","title":"Alice Briefing","description":"Private updates for Alice"}
+```
+
+`id` is the URL slug: 2–32 chars, lowercase letter first, then letters/digits/hyphens. Reserved names (`v1`, `audio`, `podcast`, …) are rejected. `409` if it already exists.
+
+**Response `201 Created`**
+
+```json
+{
+  "id": "alice",
+  "title": "Alice Briefing",
+  "username": "alice",
+  "password": "<random>",
+  "token": "<random>",
+  "feed_url": "https://host/p/alice/podcast.xml",
+  "subscribe_url": "https://alice:<password>@host/p/alice/podcast.xml"
+}
+```
+
+Also: `GET /v1/podcasts`, `GET /v1/podcasts/{id}` (same payload, including secrets — treat the agent key as the owner credential). Listener passwords are stored on the show document in SQLite/Firestore.
+
+`404` unknown id. `422` invalid slug.
+
+### `POST /v1/podcasts/{id}/episodes`
+
+Same body as `POST /v1/episodes`, scoped to that show. Equivalent to sending `"podcast_id":"{id}"` on the default ingest path.
 
 ### `POST /v1/episodes`
 
@@ -46,7 +81,8 @@ Content-Type: application/json
   "title": "Morning Briefing - Sept 26, 2026",
   "content": "Good morning. Here are your top updates for today...",
   "voice_id": "en_US-lessac-medium",
-  "category": "Daily Briefing"
+  "category": "Daily Briefing",
+  "podcast_id": "alice"
 }
 ```
 
@@ -56,6 +92,7 @@ Content-Type: application/json
 | `content` | yes | 10–100 000 characters (`MIN_CONTENT_LENGTH`, `MAX_CONTENT_LENGTH`), valid UTF-8. SSML tags are stripped before TTS. |
 | `voice_id` | no | Defaults to `DEFAULT_VOICE`. Rejected if `VOICE_ALLOWLIST` is set and the id is not listed. |
 | `category` | no | Shown in the RSS `<category>` and description prefix. |
+| `podcast_id` | no | Show slug. Empty publishes to the default `/podcast.xml` feed. |
 
 Unknown JSON fields are rejected (`400`).
 
@@ -74,11 +111,12 @@ Unknown JSON fields are rejected (`400`).
 | `400` | Malformed JSON |
 | `401` | Bad bearer token |
 | `422` | Validation error (`{"error":"content: content must be at least 10 characters"}`) |
+| `404` | `podcast_id` does not exist |
 | `500` | Persist or enqueue failure |
 
 ### `GET /v1/episodes`
 
-List recent episodes (newest first). Query: `status`, `limit` (default 50, max 100), `offset`.
+List recent episodes (newest first). Query: `status`, `podcast_id`, `limit` (default 50, max 100), `offset`.
 
 ```json
 {
@@ -114,9 +152,15 @@ List recent episodes (newest first). Query: `status`, `limit` (default 50, max 1
 
 `status` is one of `QUEUED`, `PROCESSING`, `READY`, `FAILED`.
 
+### `GET /p/{id}/podcast.xml` (alias `GET /p/{id}/feed.xml`)
+
+That show's RSS. Only its `READY` episodes. Auth: that show's Basic or `?token=`.
+
+Enclosure URLs are `/p/{id}/audio/{episode_id}.mp3?token=...`. Cover: `/p/{id}/cover.png`.
+
 ### `GET /podcast.xml` (alias `GET /feed.xml`)
 
-RSS 2.0 + iTunes tags. Only `READY` episodes appear.
+Default show RSS. Only episodes **without** a `podcast_id`. Auth: `FEED_USERNAME` / `FEED_PASSWORD`.
 
 Notable channel tags:
 
@@ -125,23 +169,40 @@ Notable channel tags:
 - `atom:link rel="self"`
 - items with `enclosure url length type`, `itunes:duration`, `guid`
 
+### `GET /p/{id}/audio/{episode_id}.mp3`
+
+That show's enclosure. Auth: that show's Basic or `?token=`. Returns **404** if the episode belongs to a different show (including the default show). `HEAD` is supported.
+
+On GCS, a successful auth **307**s to a short-lived signed object URL. If signing is unavailable the service streams the bytes itself.
+
 ### `GET /audio/{episode_id}.mp3`
 
-Authenticated byte-range stream of the enclosure. `HEAD` is supported.
+Default-show enclosure only (empty `podcast_id`). Same 307 behaviour. Per-user episodes are **404** here even with default credentials.
 
-### `GET /cover.png`
+### `GET /cover.png` / `GET /p/{id}/cover.png`
 
-1400×1400 PNG artwork. Override the generated image with `PODCAST_IMAGE_FILE`.
+1400×1400 PNG artwork. No auth (clients often fetch art without credentials). Override the generated image with `PODCAST_IMAGE_FILE`.
 
 ### `GET /healthz` / `GET /readyz`
 
-Liveness is always `{"status":"ok"}`. Readiness pings the metadata store.
+Liveness is always `{"status":"ok"}`. Readiness pings the metadata store. From the public internet on Cloud Run, `/healthz` may be intercepted by Google's frontend (HTML 404); use `/readyz`.
 
 ## MCP
 
 Streamable HTTP endpoint: `POST /mcp` (also `GET` / `DELETE` for session lifecycle). Same bearer token as REST.
 
 Server implementation: `podcaster` v0.1.0.
+
+### Tool `create_podcast`
+
+| Input | Required | Description |
+| --- | --- | --- |
+| `id` | yes | URL slug (`alice`) |
+| `title` | yes | Show title |
+| `description` | no | RSS description |
+| `author` | no | `itunes:author` |
+
+Output matches `POST /v1/podcasts` (`username`, `password`, `token`, `feed_url`, `subscribe_url`).
 
 ### Tool `publish_agent_update`
 
@@ -151,6 +212,7 @@ Server implementation: `podcaster` v0.1.0.
 | `content` | yes | Plain-text script |
 | `category` | no | e.g. `Daily Briefing` |
 | `voice_id` | no | Piper voice id |
+| `podcast_id` | no | Show slug. Empty publishes to the default feed. |
 
 **Output**
 
@@ -186,8 +248,14 @@ For stdio-style local development, point an MCP HTTP client at `http://localhost
 ## cURL examples
 
 ```bash
-# enqueue
-curl -sS -X POST "$BASE/v1/episodes" \
+# create a private show
+curl -sS -X POST "$BASE/v1/podcasts" \
+  -H "Authorization: Bearer $AGENT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"alice","title":"Alice Briefing","description":"Private updates for Alice"}'
+
+# publish to that show
+curl -sS -X POST "$BASE/v1/podcasts/alice/episodes" \
   -H "Authorization: Bearer $AGENT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"title":"Morning Briefing","content":"Good morning. Here are your top updates for today."}'
@@ -195,9 +263,9 @@ curl -sS -X POST "$BASE/v1/episodes" \
 # poll
 curl -sS "$BASE/v1/episodes/ep_..." -H "Authorization: Bearer $AGENT_API_KEY"
 
-# feed
-curl -sS -u "$FEED_USERNAME:$FEED_PASSWORD" "$BASE/podcast.xml"
+# that show's feed (use the password from create)
+curl -sS -u "alice:$ALICE_PASSWORD" "$BASE/p/alice/podcast.xml"
 
-# audio
-curl -sS -u "$FEED_USERNAME:$FEED_PASSWORD" -o episode.mp3 "$BASE/audio/ep_....mp3"
+# default show (env FEED_*)
+curl -sS -u "$FEED_USERNAME:$FEED_PASSWORD" "$BASE/podcast.xml"
 ```

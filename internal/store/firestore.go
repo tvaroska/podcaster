@@ -11,9 +11,13 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/tvaroska/podcaster/internal/episode"
+	"github.com/tvaroska/podcaster/internal/podcast"
 )
 
-const firestoreCollection = "episodes"
+const (
+	firestoreCollection        = "episodes"
+	firestorePodcastCollection = "podcasts"
+)
 
 type Firestore struct {
 	client *firestore.Client
@@ -29,6 +33,7 @@ func OpenFirestore(ctx context.Context, project string) (*Firestore, error) {
 
 type fsDoc struct {
 	ID              string     `firestore:"id"`
+	PodcastID       string     `firestore:"podcast_id"`
 	Title           string     `firestore:"title"`
 	ScriptText      string     `firestore:"script_text"`
 	Category        string     `firestore:"category"`
@@ -46,6 +51,7 @@ type fsDoc struct {
 func toDoc(ep *episode.Episode) fsDoc {
 	return fsDoc{
 		ID:              ep.ID,
+		PodcastID:       ep.PodcastID,
 		Title:           ep.Title,
 		ScriptText:      ep.ScriptText,
 		Category:        ep.Category,
@@ -64,6 +70,7 @@ func toDoc(ep *episode.Episode) fsDoc {
 func fromDoc(d fsDoc) *episode.Episode {
 	return &episode.Episode{
 		ID:              d.ID,
+		PodcastID:       d.PodcastID,
 		Title:           d.Title,
 		ScriptText:      d.ScriptText,
 		Category:        d.Category,
@@ -112,6 +119,9 @@ func (s *Firestore) List(ctx context.Context, f episode.ListFilter) ([]*episode.
 		limit = 50
 	}
 	q := s.col().Query
+	if f.PodcastID != "" {
+		q = q.Where("podcast_id", "==", f.PodcastID)
+	}
 	if f.Status != "" {
 		status := f.Status
 		if status == episode.StatusQueued {
@@ -138,7 +148,11 @@ func (s *Firestore) List(ctx context.Context, f episode.ListFilter) ([]*episode.
 		if err := snap.DataTo(&d); err != nil {
 			return nil, err
 		}
-		out = append(out, fromDoc(d))
+		ep := fromDoc(d)
+		if f.OnlyDefault && ep.PodcastID != "" {
+			continue
+		}
+		out = append(out, ep)
 	}
 	return out, nil
 }
@@ -182,6 +196,75 @@ func (s *Firestore) Delete(ctx context.Context, id string) error {
 func (s *Firestore) Ping(ctx context.Context) error {
 	_, err := s.col().Limit(1).Documents(ctx).GetAll()
 	return err
+}
+
+type fsPodcastDoc struct {
+	ID          string    `firestore:"id"`
+	Title       string    `firestore:"title"`
+	Description string    `firestore:"description"`
+	Author      string    `firestore:"author"`
+	Username    string    `firestore:"username"`
+	Password    string    `firestore:"password"`
+	Token       string    `firestore:"token"`
+	CreatedAt   time.Time `firestore:"created_at"`
+}
+
+func (s *Firestore) podcasts() *firestore.CollectionRef {
+	return s.client.Collection(firestorePodcastCollection)
+}
+
+func (s *Firestore) CreatePodcast(ctx context.Context, p *podcast.Podcast) error {
+	_, err := s.podcasts().Doc(p.ID).Create(ctx, fsPodcastDoc{
+		ID: p.ID, Title: p.Title, Description: p.Description, Author: p.Author,
+		Username: p.Username, Password: p.Password, Token: p.Token, CreatedAt: p.CreatedAt.UTC(),
+	})
+	if status.Code(err) == codes.AlreadyExists {
+		return ErrAlreadyExists
+	}
+	return err
+}
+
+func (s *Firestore) GetPodcast(ctx context.Context, id string) (*podcast.Podcast, error) {
+	snap, err := s.podcasts().Doc(id).Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	var d fsPodcastDoc
+	if err := snap.DataTo(&d); err != nil {
+		return nil, err
+	}
+	return podcastFromDoc(d), nil
+}
+
+func (s *Firestore) ListPodcasts(ctx context.Context) ([]*podcast.Podcast, error) {
+	iter := s.podcasts().OrderBy("created_at", firestore.Desc).Documents(ctx)
+	defer iter.Stop()
+	var out []*podcast.Podcast
+	for {
+		snap, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		var d fsPodcastDoc
+		if err := snap.DataTo(&d); err != nil {
+			return nil, err
+		}
+		out = append(out, podcastFromDoc(d))
+	}
+	return out, nil
+}
+
+func podcastFromDoc(d fsPodcastDoc) *podcast.Podcast {
+	return &podcast.Podcast{
+		ID: d.ID, Title: d.Title, Description: d.Description, Author: d.Author,
+		Username: d.Username, Password: d.Password, Token: d.Token, CreatedAt: d.CreatedAt.UTC(),
+	}
 }
 
 func (s *Firestore) Close() error {
