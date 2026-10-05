@@ -50,17 +50,20 @@ Content-Type: application/json
 {
   "id": "alice",
   "title": "Alice Briefing",
+  "description": "Private updates for Alice",
+  "author": "Podcaster",
   "username": "alice",
   "password": "<random>",
   "token": "<random>",
   "feed_url": "https://host/p/alice/podcast.xml",
-  "subscribe_url": "https://alice:<password>@host/p/alice/podcast.xml"
+  "subscribe_url": "https://alice:<password>@host/p/alice/podcast.xml",
+  "created_at": "2026-09-26T13:30:00Z"
 }
 ```
 
 Also: `GET /v1/podcasts`, `GET /v1/podcasts/{id}` (same payload, including secrets — treat the agent key as the owner credential). Listener passwords are stored on the show document in SQLite/Firestore.
 
-`404` unknown id. `422` invalid slug.
+`404` unknown id on `GET /v1/podcasts/{id}`. `422` invalid slug.
 
 ### `POST /v1/podcasts/{id}/episodes`
 
@@ -101,17 +104,19 @@ Unknown JSON fields are rejected (`400`).
 ```json
 {
   "episode_id": "ep_8f9a2b1c0d1e2f3a",
+  "podcast_id": "alice",
   "status": "QUEUED",
   "created_at": "2026-09-26T13:30:00Z"
 }
 ```
 
+(`podcast_id` is omitted when publishing to the default feed.)
+
 | Status | Meaning |
 | --- | --- |
 | `400` | Malformed JSON |
 | `401` | Bad bearer token |
-| `422` | Validation error (`{"error":"content: content must be at least 10 characters"}`) |
-| `404` | `podcast_id` does not exist |
+| `422` | Validation error (`{"error":"content: content must be at least 10 characters"}` or `{"error":"podcast_id: podcast not found"}`) |
 | `500` | Persist or enqueue failure |
 
 ### `GET /v1/episodes`
@@ -123,6 +128,7 @@ List recent episodes (newest first). Query: `status`, `podcast_id`, `limit` (def
   "episodes": [
     {
       "episode_id": "ep_8f9a2b1c0d1e2f3a",
+      "podcast_id": "alice",
       "title": "Morning Briefing - Sept 26, 2026",
       "status": "READY",
       "category": "Daily Briefing",
@@ -138,6 +144,7 @@ List recent episodes (newest first). Query: `status`, `podcast_id`, `limit` (def
 ```json
 {
   "episode_id": "ep_8f9a2b1c0d1e2f3a",
+  "podcast_id": "alice",
   "title": "Morning Briefing - Sept 26, 2026",
   "status": "READY",
   "category": "Daily Briefing",
@@ -202,7 +209,7 @@ Server implementation: `podcaster` v0.1.0.
 | `description` | no | RSS description |
 | `author` | no | `itunes:author` |
 
-Output matches `POST /v1/podcasts` (`username`, `password`, `token`, `feed_url`, `subscribe_url`).
+Returns `id`, `title`, `username`, `password`, `token`, `feed_url`, `subscribe_url`, and `message`.
 
 ### Tool `publish_agent_update`
 
@@ -226,7 +233,7 @@ Output matches `POST /v1/podcasts` (`username`, `password`, `token`, `feed_url`,
 
 ### Tool `get_episode_status`
 
-Input: `episode_id`. Output mirrors the REST GET payload.
+Input: `episode_id`. Returns `episode_id`, `title`, `status`, `duration_seconds` (if set), `error_message` (if set), `created_at`, and `published_at` (if set).
 
 ### Claude Desktop / Claude Code example
 

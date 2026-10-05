@@ -97,7 +97,7 @@ Authenticated `GET /audio/...` (or `/p/{id}/audio/...`):
 
 1. Check Basic / `?token=` for **that show**.
 2. Reject if the episode's `podcast_id` does not match the URL (default `/audio` only serves empty `podcast_id`).
-3. If storage implements `SignedURL`, redirect **307** to GCS (15-minute TTL). The podcast client then downloads from GCS.
+3. If storage implements `SignedURL`, redirect **307** to GCS (30-minute TTL; 15-minute default if unspecified). The podcast client then downloads from GCS.
 4. Otherwise stream through the control plane (`http.ServeContent`).
 
 Enclosure URLs in RSS still point at the control plane (`?token=`), not at GCS. The signed URL is minted at play time.
@@ -110,9 +110,9 @@ Enclosure URLs in RSS still point at the control plane (`?token=`), not at GCS. 
 
 ## Worker lifecycle
 
-- CAS `PENDING` → `PROCESSING` is the lock.
-- Job `maxRetries: 1`. After `FAILED`, a retry loses CAS (status is no longer `PENDING`).
-- `Reconcile` on **service start** resets expired `PROCESSING` back to `PENDING` and re-dispatches. With Cloud Run `--min-instances=0` a stranded episode waits for the next cold start.
+- CAS `PENDING` → `PROCESSING` is the primary lock. `READY` episodes are skipped as a no-op.
+- Job `maxRetries: 1`. On retry, the worker can re-claim `FAILED` episodes via CAS (`FAILED` → `PROCESSING`) or reclaim an interrupted `PROCESSING` episode when `CLOUD_RUN_TASK_ATTEMPT` is non-zero; otherwise concurrent workers skip `PROCESSING` episodes.
+- `Reconcile` on **service start** resets any stranded `PROCESSING` episodes back to `PENDING` via CAS and re-enqueues all `PENDING` episodes. With Cloud Run `--min-instances=0` a stranded episode waits for the next cold start.
 
 ## Processing sequence
 
