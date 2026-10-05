@@ -129,11 +129,11 @@ What that creates (if you would rather do it by hand, or to debug a failed step)
 
 **Firestore** native `(default)` in `$REGION`, plus the composite indexes in `deploy/firestore.indexes.json`:
 
-- `episodes`: `status ASC, created_at DESC` (default feed list)
-- `episodes`: `podcast_id ASC, created_at DESC`
-- `episodes`: `podcast_id ASC, status ASC, created_at DESC`
+- `episodes`: `status ASC, created_at DESC` (status-filtered episode lists and startup `Reconcile`)
+- `episodes`: `podcast_id ASC, created_at DESC` (per-show episode lists)
+- `episodes`: `podcast_id ASC, status ASC, created_at DESC` (default and per-user RSS feeds)
 
-Indexes take a few minutes to go `READY`. Per-user feeds 500 with `FAILED_PRECONDITION` until the `podcast_id` indexes exist.
+Indexes take a few minutes to go `READY`. Feeds 500 with `FAILED_PRECONDITION` until the `podcast_id` indexes exist.
 
 ```bash
 gcloud firestore indexes composite list --project=$PROJECT --database='(default)'

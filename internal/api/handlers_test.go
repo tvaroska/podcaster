@@ -262,9 +262,11 @@ func TestCoverGenerate(t *testing.T) {
 type mockSignedStorage struct {
 	storage.Storage
 	signedURL string
+	lastOpts  storage.SignedURLOptions
 }
 
 func (m *mockSignedStorage) SignedURL(ctx context.Context, key string, opts storage.SignedURLOptions) (string, error) {
+	m.lastOpts = opts
 	return m.signedURL, nil
 }
 
@@ -282,21 +284,27 @@ func TestAudioSignedURLRedirect(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app.Storage = &mockSignedStorage{
+	mockBlob := &mockSignedStorage{
 		Storage:   app.Storage,
 		signedURL: "https://storage.googleapis.com/test-bucket/audio/ep_signed.mp3?signature=xyz",
 	}
+	app.Storage = mockBlob
 
-	req := httptest.NewRequest(http.MethodGet, "/audio/ep_signed.mp3?token=feed-token", nil)
-	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, req)
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		req := httptest.NewRequest(method, "/audio/ep_signed.mp3?token=feed-token", nil)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusTemporaryRedirect {
-		t.Fatalf("expected status 307, got %d", rr.Code)
-	}
-	loc := rr.Header().Get("Location")
-	if loc != "https://storage.googleapis.com/test-bucket/audio/ep_signed.mp3?signature=xyz" {
-		t.Fatalf("unexpected redirect location: %s", loc)
+		if rr.Code != http.StatusTemporaryRedirect {
+			t.Fatalf("%s: expected status 307, got %d", method, rr.Code)
+		}
+		loc := rr.Header().Get("Location")
+		if loc != "https://storage.googleapis.com/test-bucket/audio/ep_signed.mp3?signature=xyz" {
+			t.Fatalf("%s: unexpected redirect location: %s", method, loc)
+		}
+		if mockBlob.lastOpts.Method != method {
+			t.Fatalf("%s: expected SignedURL method %q, got %q", method, method, mockBlob.lastOpts.Method)
+		}
 	}
 }
 

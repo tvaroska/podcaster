@@ -361,7 +361,7 @@ func (h *Handler) audio(w http.ResponseWriter, r *http.Request) {
 	if signer, ok := h.App.Storage.(storage.URLSigner); ok {
 		signedURL, err := signer.SignedURL(r.Context(), ep.AudioURI, storage.SignedURLOptions{
 			Expiry: 30 * time.Minute,
-			Method: http.MethodGet,
+			Method: r.Method,
 		})
 		if err == nil && signedURL != "" {
 			http.Redirect(w, r, signedURL, http.StatusTemporaryRedirect)

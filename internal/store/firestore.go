@@ -119,7 +119,9 @@ func (s *Firestore) List(ctx context.Context, f episode.ListFilter) ([]*episode.
 		limit = 50
 	}
 	q := s.col().Query
-	if f.PodcastID != "" {
+	if f.OnlyDefault {
+		q = q.Where("podcast_id", "==", "")
+	} else if f.PodcastID != "" {
 		q = q.Where("podcast_id", "==", f.PodcastID)
 	}
 	if f.Status != "" {
