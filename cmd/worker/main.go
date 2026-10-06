@@ -29,6 +29,11 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if cfg.WorkerTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.WorkerTimeout)
+		defer cancel()
+	}
 
 	application, err := app.OpenWithOptions(ctx, cfg, log, app.Options{DisableDispatcher: true})
 	if err != nil {

@@ -111,12 +111,17 @@ bind roles/logging.logWriter
 bind roles/secretmanager.secretAccessor
 # Needed so the control plane can RunJob with EPISODE_ID env overrides.
 bind roles/run.jobsExecutorWithOverrides
-# Signed GCS URLs on Cloud Run use IAM signBlob, not a JSON key.
-bind roles/iam.serviceAccountTokenCreator
 
 gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
   --member="serviceAccount:$SA" \
   --role=roles/storage.objectAdmin \
+  --quiet >/dev/null
+
+# Signed GCS URLs on Cloud Run use IAM signBlob on this SA, not a JSON key.
+gcloud iam service-accounts add-iam-policy-binding "$SA" \
+  --project="$PROJECT" \
+  --member="serviceAccount:$SA" \
+  --role=roles/iam.serviceAccountTokenCreator \
   --quiet >/dev/null
 
 # Cloud Run Jobs execute as this SA; the caller (also this SA) must be allowed to act as it.

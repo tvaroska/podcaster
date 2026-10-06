@@ -18,18 +18,22 @@ set -a && source .env && set +a
 | `LISTEN_ADDR` | `:8080` | HTTP bind address. If empty, `PORT` is used (Cloud Run convention). |
 | `PORT` | — | Alternate bind port when `LISTEN_ADDR` is unset |
 | `PUBLIC_BASE_URL` | `http://localhost:8080` | Absolute URL used in RSS enclosures and artwork. Must match the host listeners use. |
-| `AGENT_API_KEY` | `dev-agent-key` in local mode | Bearer token for REST + MCP |
+| `ADMIN_API_KEY` | — | Optional super key for REST + MCP (required to create/list shows via `POST /v1/podcasts` and `GET /v1/podcasts` when set; when unset, `AGENT_API_KEY` acts as the super key). |
+| `AGENT_API_KEY` | `dev-agent-key` in local mode | Bearer token for REST + MCP (acts as super key when `ADMIN_API_KEY` is unset, or default-feed submit key when `ADMIN_API_KEY` is set) |
 | `FEED_USERNAME` / `FEED_PASSWORD` | `podcast` / `podcast` in local mode | HTTP Basic for the **default** show (`/podcast.xml`) |
 | `FEED_TOKEN` | `dev-feed-token` in local mode | Default-show `?token=`; derived from user:pass if empty |
 | `STORE_BACKEND` | `sqlite` | `sqlite` or `firestore` |
 | `SQLITE_PATH` | `data/podcaster.db` | SQLite file |
-| `GCP_PROJECT` | — | Required for Firestore, GCS, Cloud Run Jobs |
+| `GCP_PROJECT` | — | Required for Firestore, GCS, Cloud Run Jobs (falls back to `GOOGLE_CLOUD_PROJECT`) |
+| `GOOGLE_CLOUD_PROJECT` | — | Fallback for `GCP_PROJECT` when `GCP_PROJECT` is unset |
 | `STORAGE_BACKEND` | `local` | `local` or `gcs` |
 | `LOCAL_DATA_DIR` | `data` | Root for local audio objects |
 | `GCS_BUCKET` | — | Private bucket for enclosures |
 | `JOB_BACKEND` | `local` | `local` (in-process) or `cloudrun` |
 | `CLOUD_RUN_JOB_NAME` | — | Job name used by the control plane. Do **not** set `CLOUD_RUN_JOB` on a Cloud Run **Service** — the platform reserves that name and the deploy is rejected. |
 | `CLOUD_RUN_REGION` | `us-central1` | Job region |
+| `EPISODE_ID` | — | Target episode ID required by `cmd/worker` (injected as an override by `CloudRunDispatcher`) |
+| `CLOUD_RUN_TASK_ATTEMPT` | `0` | Set automatically by Cloud Run Jobs; when `> 0`, allows the worker to reclaim a stranded `PROCESSING` episode on retry |
 | `WORKER_TIMEOUT` | `30m` | Per-episode synthesis deadline |
 | `SHUTDOWN_TIMEOUT` | `25s` | HTTP graceful shutdown |
 | `TTS_ENGINE` | `mock` | `mock` (embedded beep) or `piper` |
@@ -50,11 +54,11 @@ set -a && source .env && set +a
 | `MIN_CONTENT_LENGTH` | `10` | Ingest validation |
 | `MAX_CONTENT_LENGTH` | `100000` | Ingest validation |
 | `MAX_TITLE_LENGTH` | `200` | Ingest validation |
-| `PODCASTER_DEV` | unset | Fill documented local secrets when `AGENT_API_KEY` is empty |
+| `PODCASTER_DEV` | unset | Fill missing documented local secrets when all backends (`STORE_BACKEND`, `STORAGE_BACKEND`, `JOB_BACKEND`) are local |
 
-When `AGENT_API_KEY` is unset and backends are local, the process fills in the documented development secrets and logs a warning. `Validate()` only checks that secrets are *non-empty* — documented `dev-agent-key` / `podcast` values are accepted even with Firestore/GCS. Bootstrap generates random secrets; use those.
+When all three backends are local (`sqlite`, `local`, `local`), the process fills in any missing documented development secrets (`AGENT_API_KEY`, `FEED_USERNAME`, `FEED_PASSWORD`, `FEED_TOKEN`) and logs a warning. `Validate()` only checks that secrets are *non-empty* — documented `dev-agent-key` / `podcast` values are accepted if explicitly set on Firestore/GCS. Bootstrap generates random secrets; use those.
 
-Per-user shows (`POST /v1/podcasts`) store **their own** username/password/token in the metadata store (`podcasts` table / Firestore collection). They do not use `FEED_*`.
+Per-user shows (`POST /v1/podcasts`) store **their own** publisher `submit_key` and listener `username`/`password`/`token` in the metadata store (`podcasts` table / Firestore collection). They do not use `FEED_*`. Listener credentials can be rotated via `POST /v1/podcasts/{id}/rotate` (or MCP `rotate_podcast_credentials`).
 
 ## Local
 
@@ -339,7 +343,7 @@ https://FEED_USERNAME:FEED_PASSWORD@HOST/podcast.xml
 
 - **Ingest → Job is not a queue.** Each `POST /v1/episodes` is a synchronous `jobs.run` RPC. Batch publishes can hit Cloud Run Jobs concurrency quotas (default 100). There is no DLQ.
 - **Reconcile only runs on service process start.** With `--min-instances=0` a crash-stranded `PROCESSING` row waits until the next cold start.
-- **Permanent feed tokens are embedded in every enclosure URL.** Sharing one episode link leaks that show's credentials. Treat subscribe URLs as secrets.
+- **Feed tokens are embedded in every enclosure URL.** Sharing one episode link leaks that show's listener token. Treat subscribe URLs as secrets, and rotate a compromised listener `password`/`token` via `POST /v1/podcasts/{id}/rotate` (or MCP `rotate_podcast_credentials`).
 - **Listener passwords live in Firestore/SQLite** on the `podcasts` document (plaintext). Anyone with `roles/datastore.user` can read them. Default-show secrets are in Secret Manager.
 - **Do not reuse `dev-agent-key` / `podcast`/`podcast`.** The process will start with them on Firestore/GCS.
 - **`VOICE_ALLOWLIST` should be set in production.** Otherwise `voice_id` may be treated as a Piper model path (`*.onnx` / path separators).

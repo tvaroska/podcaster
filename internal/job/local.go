@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
 
 var (
 	ErrDispatcherClosed = errors.New("local dispatcher is closed")
+	ErrClosed           = ErrDispatcherClosed
 	ErrQueueFull        = errors.New("job queue is full")
 )
 
@@ -22,6 +24,7 @@ type LocalDispatcher struct {
 	timeout time.Duration
 	log     *slog.Logger
 	jobs    chan string
+	done    chan struct{}
 	wg      sync.WaitGroup
 	once    sync.Once
 	mu      sync.RWMutex
@@ -50,6 +53,7 @@ func NewLocalWithQueueSize(process Processor, workers int, queueSize int, timeou
 		timeout: timeout,
 		log:     log,
 		jobs:    make(chan string, queueSize),
+		done:    make(chan struct{}),
 	}
 	for i := 0; i < workers; i++ {
 		d.wg.Add(1)
@@ -59,11 +63,20 @@ func NewLocalWithQueueSize(process Processor, workers int, queueSize int, timeou
 }
 
 func (d *LocalDispatcher) Enqueue(ctx context.Context, episodeID string) error {
+	episodeID = strings.TrimSpace(episodeID)
+	if episodeID == "" {
+		return ErrEpisodeIDRequired
+	}
 	d.mu.RLock()
-	closed := d.closed
-	d.mu.RUnlock()
-	if closed {
+	defer d.mu.RUnlock()
+	if d.closed {
 		return ErrDispatcherClosed
+	}
+
+	select {
+	case <-d.done:
+		return ErrDispatcherClosed
+	default:
 	}
 
 	select {
@@ -71,21 +84,34 @@ func (d *LocalDispatcher) Enqueue(ctx context.Context, episodeID string) error {
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-d.done:
+		return ErrDispatcherClosed
 	}
 }
 
 // TryEnqueue attempts to enqueue without blocking if the queue is full.
 func (d *LocalDispatcher) TryEnqueue(episodeID string) error {
+	episodeID = strings.TrimSpace(episodeID)
+	if episodeID == "" {
+		return ErrEpisodeIDRequired
+	}
 	d.mu.RLock()
-	closed := d.closed
-	d.mu.RUnlock()
-	if closed {
+	defer d.mu.RUnlock()
+	if d.closed {
 		return ErrDispatcherClosed
+	}
+
+	select {
+	case <-d.done:
+		return ErrDispatcherClosed
+	default:
 	}
 
 	select {
 	case d.jobs <- episodeID:
 		return nil
+	case <-d.done:
+		return ErrDispatcherClosed
 	default:
 		return ErrQueueFull
 	}
@@ -93,6 +119,7 @@ func (d *LocalDispatcher) TryEnqueue(episodeID string) error {
 
 func (d *LocalDispatcher) Close() {
 	d.once.Do(func() {
+		close(d.done)
 		d.mu.Lock()
 		d.closed = true
 		close(d.jobs)

@@ -39,6 +39,40 @@ func TestEncodeAndProbe(t *testing.T) {
 	}
 }
 
+func TestConcatWAV(t *testing.T) {
+	dir := t.TempDir()
+	w1 := filepath.Join(dir, "part1.wav")
+	if err := os.WriteFile(w1, []byte("RIFFpart1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	singleDest := filepath.Join(dir, "single.wav")
+	if err := ConcatWAV(context.Background(), "", []string{w1}, singleDest); err != nil {
+		t.Fatalf("single ConcatWAV failed: %v", err)
+	}
+	got, err := os.ReadFile(singleDest)
+	if err != nil || string(got) != "RIFFpart1" {
+		t.Fatalf("unexpected single concat output: %q (%v)", string(got), err)
+	}
+
+	fakeFFmpeg := filepath.Join(dir, "ffmpeg")
+	writeExecutable(t, fakeFFmpeg, `#!/bin/sh
+for last; do true; done
+printf "RIFFcombined" > "$last"
+`)
+	w2 := filepath.Join(dir, "part2.wav")
+	if err := os.WriteFile(w2, []byte("RIFFpart2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	multiDest := filepath.Join(dir, "multi.wav")
+	if err := ConcatWAV(context.Background(), fakeFFmpeg, []string{w1, w2}, multiDest); err != nil {
+		t.Fatalf("multi ConcatWAV failed: %v", err)
+	}
+	gotMulti, err := os.ReadFile(multiDest)
+	if err != nil || string(gotMulti) != "RIFFcombined" {
+		t.Fatalf("unexpected multi concat output: %q (%v)", string(gotMulti), err)
+	}
+}
+
 func testdataMP3(t *testing.T) string {
 	t.Helper()
 	candidates := []string{

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,19 +11,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tvaroska/podcaster/internal/auth"
 	"github.com/tvaroska/podcaster/internal/episode"
 	"github.com/tvaroska/podcaster/internal/podcast"
 
 	_ "modernc.org/sqlite"
 )
 
+const sqliteTimeLayout = "2006-01-02T15:04:05.000000000Z"
+
 const sqliteSchema = `
 CREATE TABLE IF NOT EXISTS episodes (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
     script_text TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT '',
     voice_id TEXT NOT NULL DEFAULT '',
+    image_url TEXT NOT NULL DEFAULT '',
+    chapters_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL,
     audio_uri TEXT NOT NULL DEFAULT '',
     duration_seconds REAL NOT NULL DEFAULT 0,
@@ -39,9 +46,11 @@ CREATE TABLE IF NOT EXISTS podcasts (
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     author TEXT NOT NULL DEFAULT '',
+    image_url TEXT NOT NULL DEFAULT '',
     username TEXT NOT NULL,
     password TEXT NOT NULL,
     token TEXT NOT NULL,
+    submit_key TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 `
@@ -73,6 +82,26 @@ func OpenSQLite(path string) (*SQLite, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate sqlite podcast_id: %w", err)
 	}
+	if err := ensureColumn(db, "episodes", "description", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate sqlite description: %w", err)
+	}
+	if err := ensureColumn(db, "episodes", "image_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate sqlite episode image_url: %w", err)
+	}
+	if err := ensureColumn(db, "episodes", "chapters_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate sqlite chapters_json: %w", err)
+	}
+	if err := ensureColumn(db, "podcasts", "submit_key", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate sqlite submit_key: %w", err)
+	}
+	if err := ensureColumn(db, "podcasts", "image_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate sqlite podcast image_url: %w", err)
+	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_episodes_podcast ON episodes(podcast_id, created_at DESC)`); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -80,15 +109,31 @@ func OpenSQLite(path string) (*SQLite, error) {
 	return &SQLite{db: db}, nil
 }
 
+func marshalChapters(chapters []episode.Chapter) (string, error) {
+	if len(chapters) == 0 {
+		return "[]", nil
+	}
+	b, err := json.Marshal(chapters)
+	if err != nil {
+		return "", fmt.Errorf("marshal chapters: %w", err)
+	}
+	return string(b), nil
+}
+
 func (s *SQLite) Create(ctx context.Context, ep *episode.Episode) error {
-	_, err := s.db.ExecContext(ctx, `
+	chaptersJSON, err := marshalChapters(ep.Chapters)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
 INSERT INTO episodes (
-    id, podcast_id, title, script_text, category, voice_id, status, audio_uri,
-    duration_seconds, file_size_bytes, content_type, error_message, created_at, published_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ep.ID, ep.PodcastID, ep.Title, ep.ScriptText, ep.Category, ep.VoiceID, string(ep.Status), ep.AudioURI,
+    id, podcast_id, title, description, script_text, category, voice_id, image_url, chapters_json,
+    status, audio_uri, duration_seconds, file_size_bytes, content_type, error_message, created_at, published_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ep.ID, ep.PodcastID, ep.Title, ep.Description, ep.ScriptText, ep.Category, ep.VoiceID, ep.ImageURL, chaptersJSON,
+		string(ep.Status), ep.AudioURI,
 		ep.DurationSeconds, ep.FileSizeBytes, ep.ContentType, ep.ErrorMessage,
-		ep.CreatedAt.UTC().Format(time.RFC3339Nano), formatTimePtr(ep.PublishedAt),
+		ep.CreatedAt.UTC().Format(sqliteTimeLayout), formatTimePtr(ep.PublishedAt),
 	)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
@@ -110,8 +155,10 @@ func (s *SQLite) Get(ctx context.Context, id string) (*episode.Episode, error) {
 
 func (s *SQLite) List(ctx context.Context, f episode.ListFilter) ([]*episode.Episode, error) {
 	limit := f.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 50
+	} else if limit > 100 {
+		limit = 100
 	}
 	offset := f.Offset
 	if offset < 0 {
@@ -159,12 +206,17 @@ func (s *SQLite) List(ctx context.Context, f episode.ListFilter) ([]*episode.Epi
 }
 
 func (s *SQLite) Update(ctx context.Context, ep *episode.Episode) error {
+	chaptersJSON, err := marshalChapters(ep.Chapters)
+	if err != nil {
+		return err
+	}
 	res, err := s.db.ExecContext(ctx, `
 UPDATE episodes SET
-    podcast_id=?, title=?, script_text=?, category=?, voice_id=?, status=?, audio_uri=?,
-    duration_seconds=?, file_size_bytes=?, content_type=?, error_message=?, published_at=?
+    podcast_id=?, title=?, description=?, script_text=?, category=?, voice_id=?, image_url=?, chapters_json=?,
+    status=?, audio_uri=?, duration_seconds=?, file_size_bytes=?, content_type=?, error_message=?, published_at=?
 WHERE id=?`,
-		ep.PodcastID, ep.Title, ep.ScriptText, ep.Category, ep.VoiceID, string(ep.Status), ep.AudioURI,
+		ep.PodcastID, ep.Title, ep.Description, ep.ScriptText, ep.Category, ep.VoiceID, ep.ImageURL, chaptersJSON,
+		string(ep.Status), ep.AudioURI,
 		ep.DurationSeconds, ep.FileSizeBytes, ep.ContentType, ep.ErrorMessage,
 		formatTimePtr(ep.PublishedAt), ep.ID,
 	)
@@ -179,19 +231,33 @@ WHERE id=?`,
 }
 
 func (s *SQLite) CompareAndSwapStatus(ctx context.Context, id string, from, to episode.Status) (*episode.Episode, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE episodes SET status=? WHERE id=? AND status=?`, string(to), id, string(from))
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, `UPDATE episodes SET status=? WHERE id=? AND status=?`, string(to), id, string(from))
 	if err != nil {
 		return nil, err
 	}
 	n, _ := res.RowsAffected()
+
+	row := tx.QueryRowContext(ctx, `SELECT `+episodeColumns+` FROM episodes WHERE id = ?`, id)
+	ep, gerr := scanEpisode(row)
+	if errors.Is(gerr, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if gerr != nil {
+		return nil, gerr
+	}
 	if n == 0 {
-		ep, gerr := s.Get(ctx, id)
-		if gerr != nil {
-			return nil, gerr
-		}
 		return ep, ErrConflict
 	}
-	return s.Get(ctx, id)
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return ep, nil
 }
 
 func (s *SQLite) Delete(ctx context.Context, id string) error {
@@ -214,7 +280,7 @@ func (s *SQLite) Close() error {
 	return s.db.Close()
 }
 
-const episodeColumns = `id, podcast_id, title, script_text, category, voice_id, status, audio_uri, duration_seconds, file_size_bytes, content_type, error_message, created_at, published_at`
+const episodeColumns = `id, podcast_id, title, description, script_text, category, voice_id, image_url, chapters_json, status, audio_uri, duration_seconds, file_size_bytes, content_type, error_message, created_at, published_at`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -222,19 +288,25 @@ type rowScanner interface {
 
 func scanEpisode(row rowScanner) (*episode.Episode, error) {
 	var (
-		ep        episode.Episode
-		status    string
-		created   string
-		published sql.NullString
-		duration  float64
-		fileSize  int64
+		ep           episode.Episode
+		chaptersJSON string
+		status       string
+		created      string
+		published    sql.NullString
+		duration     float64
+		fileSize     int64
 	)
 	err := row.Scan(
-		&ep.ID, &ep.PodcastID, &ep.Title, &ep.ScriptText, &ep.Category, &ep.VoiceID, &status, &ep.AudioURI,
-		&duration, &fileSize, &ep.ContentType, &ep.ErrorMessage, &created, &published,
+		&ep.ID, &ep.PodcastID, &ep.Title, &ep.Description, &ep.ScriptText, &ep.Category, &ep.VoiceID, &ep.ImageURL, &chaptersJSON,
+		&status, &ep.AudioURI, &duration, &fileSize, &ep.ContentType, &ep.ErrorMessage, &created, &published,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if chaptersJSON != "" && chaptersJSON != "[]" {
+		if err := json.Unmarshal([]byte(chaptersJSON), &ep.Chapters); err != nil {
+			return nil, fmt.Errorf("parse chapters_json: %w", err)
+		}
 	}
 	ep.Status = episode.Status(status)
 	ep.DurationSeconds = duration
@@ -263,10 +335,10 @@ func scanEpisode(row rowScanner) (*episode.Episode, error) {
 
 func (s *SQLite) CreatePodcast(ctx context.Context, p *podcast.Podcast) error {
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO podcasts (id, title, description, author, username, password, token, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Title, p.Description, p.Author, p.Username, p.Password, p.Token,
-		p.CreatedAt.UTC().Format(time.RFC3339Nano),
+INSERT INTO podcasts (id, title, description, author, image_url, username, password, token, submit_key, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Title, p.Description, p.Author, p.ImageURL, p.Username, p.Password, p.Token, p.SubmitKey,
+		p.CreatedAt.UTC().Format(sqliteTimeLayout),
 	)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
@@ -279,7 +351,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 
 func (s *SQLite) GetPodcast(ctx context.Context, id string) (*podcast.Podcast, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, title, description, author, username, password, token, created_at
+SELECT id, title, description, author, image_url, username, password, token, submit_key, created_at
 FROM podcasts WHERE id = ?`, id)
 	p, err := scanPodcast(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -290,7 +362,7 @@ FROM podcasts WHERE id = ?`, id)
 
 func (s *SQLite) ListPodcasts(ctx context.Context) ([]*podcast.Podcast, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, title, description, author, username, password, token, created_at
+SELECT id, title, description, author, image_url, username, password, token, submit_key, created_at
 FROM podcasts ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -307,10 +379,58 @@ FROM podcasts ORDER BY created_at DESC`)
 	return out, rows.Err()
 }
 
+func (s *SQLite) UpdatePodcast(ctx context.Context, p *podcast.Podcast) error {
+	res, err := s.db.ExecContext(ctx, `
+UPDATE podcasts SET
+    title=?, description=?, author=?, image_url=?, username=?, password=?, token=?, submit_key=?
+WHERE id=?`,
+		p.Title, p.Description, p.Author, p.ImageURL, p.Username, p.Password, p.Token, p.SubmitKey, p.ID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *SQLite) GetPodcastBySubmitKey(ctx context.Context, submitKey string) (*podcast.Podcast, error) {
+	submitKey = strings.TrimSpace(submitKey)
+	if submitKey == "" {
+		return nil, ErrNotFound
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, title, description, author, image_url, username, password, token, submit_key, created_at
+FROM podcasts WHERE submit_key != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var match *podcast.Podcast
+	for rows.Next() {
+		p, err := scanPodcast(rows)
+		if err != nil {
+			return nil, err
+		}
+		if auth.APIKeyMatch(submitKey, p.SubmitKey) && match == nil {
+			match = p
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if match == nil {
+		return nil, ErrNotFound
+	}
+	return match, nil
+}
+
 func scanPodcast(row rowScanner) (*podcast.Podcast, error) {
 	var p podcast.Podcast
 	var created string
-	if err := row.Scan(&p.ID, &p.Title, &p.Description, &p.Author, &p.Username, &p.Password, &p.Token, &created); err != nil {
+	if err := row.Scan(&p.ID, &p.Title, &p.Description, &p.Author, &p.ImageURL, &p.Username, &p.Password, &p.Token, &p.SubmitKey, &created); err != nil {
 		return nil, err
 	}
 	t, err := time.Parse(time.RFC3339Nano, created)
@@ -353,5 +473,5 @@ func formatTimePtr(t *time.Time) any {
 	if t == nil {
 		return nil
 	}
-	return t.UTC().Format(time.RFC3339Nano)
+	return t.UTC().Format(sqliteTimeLayout)
 }

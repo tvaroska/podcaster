@@ -33,16 +33,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	application, err := app.Open(ctx, cfg, log)
+	application, err := app.Open(context.Background(), cfg, log)
 	if err != nil {
 		log.Error("bootstrap", "err", err)
 		os.Exit(1)
 	}
 	defer application.Close()
 
-	if err := application.Reconcile(ctx); err != nil {
-		log.Warn("startup reconciliation completed with errors", "err", err)
-	}
+	go func() {
+		if err := application.Reconcile(ctx); err != nil {
+			log.Warn("startup reconciliation completed with errors", "err", err)
+		}
+	}()
 
 	png, err := cover.Load(cfg.PodcastImageFile)
 	if err != nil {

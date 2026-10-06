@@ -12,9 +12,11 @@ type Podcast struct {
 	Title       string    `json:"title"`
 	Description string    `json:"description,omitempty"`
 	Author      string    `json:"author,omitempty"`
+	ImageURL    string    `json:"image_url,omitempty"`
 	Username    string    `json:"username"`
 	Password    string    `json:"password"`
 	Token       string    `json:"token"`
+	SubmitKey   string    `json:"submit_key,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
@@ -24,6 +26,25 @@ type CreateInput struct {
 	Title       string `json:"title"`
 	Description string `json:"description,omitempty"`
 	Author      string `json:"author,omitempty"`
+	ImageURL    string `json:"image_url,omitempty"`
+	Password    string `json:"password,omitempty"`
+	Token       string `json:"token,omitempty"`
+}
+
+// UpdateInput is the agent-facing payload used to update show metadata.
+type UpdateInput struct {
+	Title       *string `json:"title,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Author      *string `json:"author,omitempty"`
+	ImageURL    *string `json:"image_url,omitempty"`
+}
+
+// RotateOptions controls which credentials to rotate or update on a podcast.
+type RotateOptions struct {
+	RotateListener  bool   `json:"rotate_listener"`
+	RotateSubmitKey bool   `json:"rotate_submit_key"`
+	Password        string `json:"password,omitempty"`
+	Token           string `json:"token,omitempty"`
 }
 
 // NewSecrets returns a random Basic password and enclosure token.
@@ -33,6 +54,15 @@ func NewSecrets() (password, token string, err error) {
 		return "", "", err
 	}
 	return hex.EncodeToString(buf[:16]), hex.EncodeToString(buf[16:]), nil
+}
+
+// NewSubmitKey returns a random per-podcast submit key.
+func NewSubmitKey() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf[:]), nil
 }
 
 // FeedPath is the RSS path for this show.

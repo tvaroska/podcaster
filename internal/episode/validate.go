@@ -3,8 +3,12 @@ package episode
 import (
 	"errors"
 	"fmt"
+	"math"
+	"net/url"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/tvaroska/podcaster/internal/cover"
 )
 
 const (
@@ -95,16 +99,155 @@ func ValidateCreate(in CreateInput, limits Limits, voiceAllow []string) error {
 		return &ValidationError{Field: "content", Message: "content must be valid UTF-8"}
 	}
 
-	if in.VoiceID != "" && len(voiceAllow) > 0 {
-		ok := false
-		for _, v := range voiceAllow {
-			if v == in.VoiceID {
-				ok = true
-				break
+	if !utf8.ValidString(in.Category) {
+		return &ValidationError{Field: "category", Message: "category must be valid UTF-8"}
+	}
+	if utf8.RuneCountInString(in.Category) > limits.MaxTitleLength {
+		return &ValidationError{Field: "category", Message: fmt.Sprintf("category must be at most %d characters", limits.MaxTitleLength)}
+	}
+
+	if !utf8.ValidString(in.VoiceID) {
+		return &ValidationError{Field: "voice_id", Message: "voice_id must be valid UTF-8"}
+	}
+	if utf8.RuneCountInString(in.VoiceID) > limits.MaxTitleLength {
+		return &ValidationError{Field: "voice_id", Message: fmt.Sprintf("voice_id must be at most %d characters", limits.MaxTitleLength)}
+	}
+	if in.VoiceID != "" {
+		if len(voiceAllow) > 0 {
+			ok := false
+			for _, v := range voiceAllow {
+				if v == in.VoiceID {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return &ValidationError{Field: "voice_id", Message: "voice_id is not in the configured allow-list"}
+			}
+		} else if strings.Contains(in.VoiceID, "..") || strings.ContainsAny(in.VoiceID, `/\`) {
+			return &ValidationError{Field: "voice_id", Message: "voice_id must not contain path separators or traversal"}
+		}
+	}
+
+	if err := validateDescription(in.Description, limits); err != nil {
+		return err
+	}
+	if in.ImageURL != "" {
+		if err := validateHTTPURL("image_url", in.ImageURL); err != nil {
+			return err
+		}
+	}
+	if err := validateChapters(in.Chapters, limits); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateUpdate checks an episode metadata update payload.
+func ValidateUpdate(in UpdateInput, limits Limits) error {
+	limits = limits.withDefaults()
+	if in.Title != nil {
+		title := strings.TrimSpace(*in.Title)
+		if title == "" {
+			return &ValidationError{Field: "title", Message: "title is required"}
+		}
+		if utf8.RuneCountInString(title) > limits.MaxTitleLength {
+			return &ValidationError{Field: "title", Message: fmt.Sprintf("title must be at most %d characters", limits.MaxTitleLength)}
+		}
+		if !utf8.ValidString(title) {
+			return &ValidationError{Field: "title", Message: "title must be valid UTF-8"}
+		}
+	}
+	if in.Description != nil {
+		if err := validateDescription(*in.Description, limits); err != nil {
+			return err
+		}
+	}
+	if in.Category != nil {
+		cat := strings.TrimSpace(*in.Category)
+		if !utf8.ValidString(cat) {
+			return &ValidationError{Field: "category", Message: "category must be valid UTF-8"}
+		}
+		if utf8.RuneCountInString(cat) > limits.MaxTitleLength {
+			return &ValidationError{Field: "category", Message: fmt.Sprintf("category must be at most %d characters", limits.MaxTitleLength)}
+		}
+	}
+	if in.ImageURL != nil {
+		if !utf8.ValidString(*in.ImageURL) {
+			return &ValidationError{Field: "image_url", Message: "image_url must be valid UTF-8"}
+		}
+		if strings.TrimSpace(*in.ImageURL) != "" {
+			if err := validateHTTPURL("image_url", *in.ImageURL); err != nil {
+				return err
 			}
 		}
-		if !ok {
-			return &ValidationError{Field: "voice_id", Message: "voice_id is not in the configured allow-list"}
+	}
+	if in.Chapters != nil {
+		if err := validateChapters(*in.Chapters, limits); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateDescription(desc string, limits Limits) error {
+	if !utf8.ValidString(desc) {
+		return &ValidationError{Field: "description", Message: "description must be valid UTF-8"}
+	}
+	if utf8.RuneCountInString(desc) > limits.MaxContentLength {
+		return &ValidationError{Field: "description", Message: fmt.Sprintf("description must be at most %d characters", limits.MaxContentLength)}
+	}
+	return nil
+}
+
+func validateHTTPURL(field, raw string) error {
+	if !utf8.ValidString(raw) {
+		return &ValidationError{Field: field, Message: field + " must be valid UTF-8"}
+	}
+	s := strings.TrimSpace(raw)
+	if field == "image_url" && cover.IsInlineDataURI(s) {
+		if _, _, err := cover.DecodeInlineDataURI(s); err != nil {
+			return &ValidationError{Field: "image_url", Message: err.Error()}
+		}
+		return nil
+	}
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return &ValidationError{Field: field, Message: field + " must be a valid http:// or https:// URL"}
+	}
+	return nil
+}
+
+func validateChapters(chapters []Chapter, limits Limits) error {
+	for _, ch := range chapters {
+		if math.IsNaN(ch.StartSeconds) || math.IsInf(ch.StartSeconds, 0) || ch.StartSeconds < 0 {
+			return &ValidationError{Field: "chapters", Message: "chapter start_seconds must be >= 0"}
+		}
+		title := strings.TrimSpace(ch.Title)
+		if title == "" {
+			return &ValidationError{Field: "chapters", Message: "chapter title is required"}
+		}
+		if !utf8.ValidString(title) {
+			return &ValidationError{Field: "chapters", Message: "chapter title must be valid UTF-8"}
+		}
+		if utf8.RuneCountInString(title) > limits.MaxTitleLength {
+			return &ValidationError{Field: "chapters", Message: fmt.Sprintf("chapter title must be at most %d characters", limits.MaxTitleLength)}
+		}
+		if !utf8.ValidString(ch.URL) {
+			return &ValidationError{Field: "chapters", Message: "chapter url must be valid UTF-8"}
+		}
+		if strings.TrimSpace(ch.URL) != "" {
+			if err := validateHTTPURL("chapters", ch.URL); err != nil {
+				return &ValidationError{Field: "chapters", Message: "chapter url must be a valid http:// or https:// URL"}
+			}
+		}
+		if !utf8.ValidString(ch.ImageURL) {
+			return &ValidationError{Field: "chapters", Message: "chapter image_url must be valid UTF-8"}
+		}
+		if strings.TrimSpace(ch.ImageURL) != "" {
+			if err := validateHTTPURL("chapters", ch.ImageURL); err != nil {
+				return &ValidationError{Field: "chapters", Message: "chapter image_url must be a valid http:// or https:// URL"}
+			}
 		}
 	}
 	return nil

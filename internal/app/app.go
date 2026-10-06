@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tvaroska/podcaster/internal/auth"
 	"github.com/tvaroska/podcaster/internal/config"
+	"github.com/tvaroska/podcaster/internal/cover"
 	"github.com/tvaroska/podcaster/internal/episode"
 	"github.com/tvaroska/podcaster/internal/job"
 	"github.com/tvaroska/podcaster/internal/podcast"
@@ -39,12 +42,22 @@ func (a *App) logger() *slog.Logger {
 	return slog.Default()
 }
 
+func (a *App) baseURL() string {
+	if a.Cfg != nil {
+		return a.Cfg.PublicBaseURL
+	}
+	return ""
+}
+
 // CreateEpisode validates, persists a PENDING record, and enqueues TTS.
 func (a *App) CreateEpisode(ctx context.Context, in episode.CreateInput) (*episode.Episode, error) {
 	in.Title = strings.TrimSpace(in.Title)
+	in.Description = strings.TrimSpace(in.Description)
 	in.Content = strings.TrimSpace(in.Content)
 	in.Category = strings.TrimSpace(in.Category)
 	in.VoiceID = strings.TrimSpace(in.VoiceID)
+	in.ImageURL = strings.TrimSpace(in.ImageURL)
+	in.Chapters = cleanChapters(in.Chapters)
 	if err := episode.ValidateCreate(in, a.Cfg.Limits(), a.Cfg.VoiceAllow); err != nil {
 		return nil, err
 	}
@@ -62,20 +75,35 @@ func (a *App) CreateEpisode(ctx context.Context, in episode.CreateInput) (*episo
 	}
 	now := time.Now().UTC()
 	ep := &episode.Episode{
-		ID:         episode.NewID(),
-		PodcastID:  in.PodcastID,
-		Title:      in.Title,
-		ScriptText: in.Content,
-		Category:   in.Category,
-		VoiceID:    in.VoiceID,
-		Status:     episode.StatusPending,
-		CreatedAt:  now,
+		ID:          episode.NewID(),
+		PodcastID:   in.PodcastID,
+		Title:       in.Title,
+		Description: in.Description,
+		ScriptText:  in.Content,
+		Category:    in.Category,
+		VoiceID:     in.VoiceID,
+		ImageURL:    in.ImageURL,
+		Chapters:    in.Chapters,
+		Status:      episode.StatusPending,
+		CreatedAt:   now,
+	}
+	if cover.IsInlineDataURI(ep.ImageURL) {
+		data, ct, err := cover.DecodeInlineDataURI(ep.ImageURL)
+		if err != nil {
+			return nil, &episode.ValidationError{Field: "image_url", Message: err.Error()}
+		}
+		if a.Storage != nil {
+			if err := a.Storage.Put(ctx, cover.EpisodeCoverKey(ep.ID), bytes.NewReader(data), int64(len(data)), ct); err != nil {
+				return nil, fmt.Errorf("store episode cover: %w", err)
+			}
+		}
+		ep.ImageURL = a.baseURL() + ep.CoverPath()
 	}
 	if err := a.Store.Create(ctx, ep); err != nil {
 		return nil, fmt.Errorf("persist episode: %w", err)
 	}
 	if err := a.Jobs.Enqueue(ctx, ep.ID); err != nil {
-		ep.Status = episode.StatusFailed
+		ep.Status = episode.StatusPending
 		ep.ErrorMessage = "failed to enqueue synthesis job: " + err.Error()
 		_ = a.Store.Update(ctx, ep)
 		return nil, fmt.Errorf("enqueue job: %w", err)
@@ -84,12 +112,103 @@ func (a *App) CreateEpisode(ctx context.Context, in episode.CreateInput) (*episo
 	return ep, nil
 }
 
+// UpdateEpisode validates and updates an existing episode's metadata.
+func (a *App) UpdateEpisode(ctx context.Context, id string, in episode.UpdateInput) (*episode.Episode, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, &episode.ValidationError{Field: "episode_id", Message: "episode_id is required"}
+	}
+	if in.Title != nil {
+		s := strings.TrimSpace(*in.Title)
+		in.Title = &s
+	}
+	if in.Description != nil {
+		s := strings.TrimSpace(*in.Description)
+		in.Description = &s
+	}
+	if in.Category != nil {
+		s := strings.TrimSpace(*in.Category)
+		in.Category = &s
+	}
+	if in.ImageURL != nil {
+		s := strings.TrimSpace(*in.ImageURL)
+		in.ImageURL = &s
+	}
+	if in.Chapters != nil {
+		ch := cleanChapters(*in.Chapters)
+		in.Chapters = &ch
+	}
+	var limits episode.Limits
+	if a.Cfg != nil {
+		limits = a.Cfg.Limits()
+	}
+	if err := episode.ValidateUpdate(in, limits); err != nil {
+		return nil, err
+	}
+	ep, err := a.Store.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if in.Title != nil {
+		ep.Title = *in.Title
+	}
+	if in.Description != nil {
+		ep.Description = *in.Description
+	}
+	if in.Category != nil {
+		ep.Category = *in.Category
+	}
+	if in.ImageURL != nil {
+		imageURL := *in.ImageURL
+		if cover.IsInlineDataURI(imageURL) {
+			data, ct, err := cover.DecodeInlineDataURI(imageURL)
+			if err != nil {
+				return nil, &episode.ValidationError{Field: "image_url", Message: err.Error()}
+			}
+			if a.Storage != nil {
+				if err := a.Storage.Put(ctx, cover.EpisodeCoverKey(ep.ID), bytes.NewReader(data), int64(len(data)), ct); err != nil {
+					return nil, fmt.Errorf("store episode cover: %w", err)
+				}
+			}
+			imageURL = a.baseURL() + ep.CoverPath()
+		}
+		ep.ImageURL = imageURL
+	}
+	if in.Chapters != nil {
+		ep.Chapters = *in.Chapters
+	}
+	if err := a.Store.Update(ctx, ep); err != nil {
+		return nil, fmt.Errorf("update episode: %w", err)
+	}
+	a.logger().Info("episode updated", "episode_id", ep.ID)
+	return ep, nil
+}
+
+func cleanChapters(chapters []episode.Chapter) []episode.Chapter {
+	if len(chapters) == 0 {
+		return nil
+	}
+	out := make([]episode.Chapter, len(chapters))
+	for i, ch := range chapters {
+		out[i] = episode.Chapter{
+			StartSeconds: ch.StartSeconds,
+			Title:        strings.TrimSpace(ch.Title),
+			URL:          strings.TrimSpace(ch.URL),
+			ImageURL:     strings.TrimSpace(ch.ImageURL),
+		}
+	}
+	return out
+}
+
 // CreatePodcast registers a private show with its own feed credentials.
 func (a *App) CreatePodcast(ctx context.Context, in podcast.CreateInput) (*podcast.Podcast, error) {
 	in.ID = strings.ToLower(strings.TrimSpace(in.ID))
 	in.Title = strings.TrimSpace(in.Title)
 	in.Description = strings.TrimSpace(in.Description)
 	in.Author = strings.TrimSpace(in.Author)
+	in.ImageURL = strings.TrimSpace(in.ImageURL)
+	in.Password = strings.TrimSpace(in.Password)
+	in.Token = strings.TrimSpace(in.Token)
 	if err := podcast.ValidateCreate(in); err != nil {
 		return nil, err
 	}
@@ -97,21 +216,47 @@ func (a *App) CreatePodcast(ctx context.Context, in podcast.CreateInput) (*podca
 	if err != nil {
 		return nil, fmt.Errorf("generate credentials: %w", err)
 	}
+	if in.Password != "" {
+		password = in.Password
+	}
+	if in.Token != "" {
+		token = in.Token
+	} else if in.Password != "" {
+		token = in.Password
+	}
+	submitKey, err := podcast.NewSubmitKey()
+	if err != nil {
+		return nil, fmt.Errorf("generate submit key: %w", err)
+	}
 	p := &podcast.Podcast{
 		ID:          in.ID,
 		Title:       in.Title,
 		Description: in.Description,
 		Author:      in.Author,
+		ImageURL:    in.ImageURL,
 		Username:    in.ID,
 		Password:    password,
 		Token:       token,
+		SubmitKey:   submitKey,
 		CreatedAt:   time.Now().UTC(),
 	}
-	if p.Author == "" {
+	if p.Author == "" && a.Cfg != nil {
 		p.Author = a.Cfg.PodcastAuthor
 	}
-	if p.Description == "" {
+	if p.Description == "" && a.Cfg != nil {
 		p.Description = a.Cfg.PodcastDescription
+	}
+	if cover.IsInlineDataURI(p.ImageURL) {
+		data, ct, err := cover.DecodeInlineDataURI(p.ImageURL)
+		if err != nil {
+			return nil, &episode.ValidationError{Field: "image_url", Message: err.Error()}
+		}
+		if a.Storage != nil {
+			if err := a.Storage.Put(ctx, cover.PodcastCoverKey(p.ID), bytes.NewReader(data), int64(len(data)), ct); err != nil {
+				return nil, fmt.Errorf("store podcast cover: %w", err)
+			}
+		}
+		p.ImageURL = a.baseURL() + p.CoverPath()
 	}
 	if err := a.Store.CreatePodcast(ctx, p); err != nil {
 		return nil, fmt.Errorf("persist podcast: %w", err)
@@ -120,12 +265,158 @@ func (a *App) CreatePodcast(ctx context.Context, in podcast.CreateInput) (*podca
 	return p, nil
 }
 
+// UpdatePodcast validates and updates an existing podcast's metadata.
+func (a *App) UpdatePodcast(ctx context.Context, id string, in podcast.UpdateInput) (*podcast.Podcast, error) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return nil, &episode.ValidationError{Field: "podcast_id", Message: "podcast_id is required"}
+	}
+	if in.Title != nil {
+		s := strings.TrimSpace(*in.Title)
+		in.Title = &s
+	}
+	if in.Description != nil {
+		s := strings.TrimSpace(*in.Description)
+		in.Description = &s
+	}
+	if in.Author != nil {
+		s := strings.TrimSpace(*in.Author)
+		in.Author = &s
+	}
+	if in.ImageURL != nil {
+		s := strings.TrimSpace(*in.ImageURL)
+		in.ImageURL = &s
+	}
+	if err := podcast.ValidateUpdate(in); err != nil {
+		return nil, err
+	}
+	p, err := a.Store.GetPodcast(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if in.Title != nil {
+		p.Title = *in.Title
+	}
+	if in.Description != nil {
+		p.Description = *in.Description
+	}
+	if in.Author != nil {
+		p.Author = *in.Author
+	}
+	if in.ImageURL != nil {
+		imageURL := *in.ImageURL
+		if cover.IsInlineDataURI(imageURL) {
+			data, ct, err := cover.DecodeInlineDataURI(imageURL)
+			if err != nil {
+				return nil, &episode.ValidationError{Field: "image_url", Message: err.Error()}
+			}
+			if a.Storage != nil {
+				if err := a.Storage.Put(ctx, cover.PodcastCoverKey(p.ID), bytes.NewReader(data), int64(len(data)), ct); err != nil {
+					return nil, fmt.Errorf("store podcast cover: %w", err)
+				}
+			}
+			imageURL = a.baseURL() + p.CoverPath()
+		}
+		p.ImageURL = imageURL
+	}
+	if err := a.Store.UpdatePodcast(ctx, p); err != nil {
+		return nil, fmt.Errorf("update podcast: %w", err)
+	}
+	a.logger().Info("podcast updated", "podcast_id", p.ID)
+	return p, nil
+}
+
+// RotatePodcastCredentials rotates or updates listener and/or submitter credentials for a podcast.
+func (a *App) RotatePodcastCredentials(ctx context.Context, id string, opts podcast.RotateOptions) (*podcast.Podcast, error) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return nil, &episode.ValidationError{Field: "podcast_id", Message: "podcast_id is required"}
+	}
+	p, err := a.Store.GetPodcast(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	opts.Password = strings.TrimSpace(opts.Password)
+	opts.Token = strings.TrimSpace(opts.Token)
+	if !opts.RotateListener && !opts.RotateSubmitKey && opts.Password == "" && opts.Token == "" {
+		opts.RotateListener = true
+	}
+	if opts.RotateListener || opts.Password != "" || opts.Token != "" {
+		pass, tok, err := podcast.NewSecrets()
+		if err != nil {
+			return nil, fmt.Errorf("generate credentials: %w", err)
+		}
+		if opts.Password != "" {
+			p.Password = opts.Password
+		} else if opts.RotateListener {
+			p.Password = pass
+		}
+		if opts.Token != "" {
+			p.Token = opts.Token
+		} else if opts.RotateListener {
+			p.Token = tok
+		}
+	}
+	if opts.RotateSubmitKey {
+		sk, err := podcast.NewSubmitKey()
+		if err != nil {
+			return nil, fmt.Errorf("generate submit key: %w", err)
+		}
+		p.SubmitKey = sk
+	}
+	if err := a.Store.UpdatePodcast(ctx, p); err != nil {
+		return nil, fmt.Errorf("update podcast: %w", err)
+	}
+	a.logger().Info("podcast credentials rotated", "podcast_id", p.ID, "rotate_listener", opts.RotateListener, "rotate_submit_key", opts.RotateSubmitKey)
+	return p, nil
+}
+
+// AuthenticateBearer resolves a bearer token into a Principal (admin, default submitter, or per-podcast submitter).
+func (a *App) AuthenticateBearer(ctx context.Context, token string) (auth.Principal, bool, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return auth.Principal{}, false, nil
+	}
+	if a.Cfg != nil && a.Cfg.AdminAPIKey != "" {
+		if auth.APIKeyMatch(token, a.Cfg.AdminAPIKey) {
+			return auth.Principal{Role: auth.RoleAdmin}, true, nil
+		}
+		if auth.APIKeyMatch(token, a.Cfg.AgentAPIKey) {
+			return auth.Principal{Role: auth.RoleDefaultSubmitter}, true, nil
+		}
+	} else if a.Cfg != nil {
+		if auth.APIKeyMatch(token, a.Cfg.AgentAPIKey) {
+			return auth.Principal{Role: auth.RoleAdmin}, true, nil
+		}
+	}
+	if a.Store == nil {
+		return auth.Principal{}, false, nil
+	}
+	p, err := a.Store.GetPodcastBySubmitKey(ctx, token)
+	if err == nil && p != nil {
+		return auth.Principal{Role: auth.RolePodcastSubmitter, PodcastID: p.ID}, true, nil
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return auth.Principal{}, false, nil
+	}
+	return auth.Principal{}, false, err
+}
+
 // Reconcile sweeps the store for stranded episodes across server restarts or worker crashes.
 // Episodes stuck in PROCESSING are reset to PENDING, and all PENDING episodes are re-enqueued.
 func (a *App) Reconcile(ctx context.Context) error {
 	log := a.logger()
 	if a.Store == nil {
 		return nil
+	}
+
+	var cutoff time.Time
+	if a.Cfg != nil && a.Cfg.JobBackend == config.BackendCloudRun {
+		timeout := a.Cfg.WorkerTimeout
+		if timeout <= 0 {
+			timeout = 30 * time.Minute
+		}
+		cutoff = time.Now().UTC().Add(-timeout)
 	}
 
 	// 1. Recover episodes stuck in PROCESSING (e.g. server crash or unhandled kill)
@@ -137,6 +428,9 @@ func (a *App) Reconcile(ctx context.Context) error {
 		log.Warn("reconcile: list PROCESSING episodes failed", "err", err)
 	} else {
 		for _, ep := range procList {
+			if !cutoff.IsZero() && !ep.CreatedAt.IsZero() && ep.CreatedAt.After(cutoff) {
+				continue
+			}
 			log.Info("reconcile: resetting stranded PROCESSING episode to PENDING", "episode_id", ep.ID)
 			_, casErr := a.Store.CompareAndSwapStatus(ctx, ep.ID, episode.StatusProcessing, episode.StatusPending)
 			if casErr != nil && !errors.Is(casErr, store.ErrConflict) {
@@ -155,6 +449,9 @@ func (a *App) Reconcile(ctx context.Context) error {
 			log.Warn("reconcile: list PENDING episodes failed", "err", err)
 		} else {
 			for _, ep := range pendList {
+				if !cutoff.IsZero() && !ep.CreatedAt.IsZero() && ep.CreatedAt.After(cutoff) {
+					continue
+				}
 				log.Info("reconcile: re-enqueueing PENDING episode", "episode_id", ep.ID)
 				if qerr := a.Jobs.Enqueue(ctx, ep.ID); qerr != nil {
 					log.Warn("reconcile: failed to enqueue episode", "episode_id", ep.ID, "err", qerr)

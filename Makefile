@@ -12,14 +12,14 @@ $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
 build: $(BIN_DIR)
-	$(GO) build -o $(SERVER) ./cmd/server
-	$(GO) build -o $(WORKER) ./cmd/worker
+	CGO_ENABLED=0 $(GO) build -o $(SERVER) ./cmd/server
+	CGO_ENABLED=0 $(GO) build -o $(WORKER) ./cmd/worker
 
 test:
-	$(GO) test ./...
+	CGO_ENABLED=0 $(GO) test ./...
 
 vet:
-	$(GO) vet ./...
+	CGO_ENABLED=0 $(GO) vet ./...
 
 fmt:
 	$(GO) fmt ./...

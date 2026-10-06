@@ -27,13 +27,22 @@ func (p *PiperEngine) Synthesize(ctx context.Context, text, voiceID string) (*Re
 	model := p.Model
 	cfg := p.Config
 	if voiceID != "" && voiceID != p.DefaultVoice {
+		if strings.Contains(voiceID, "..") {
+			return nil, fmt.Errorf("invalid voice_id %q", voiceID)
+		}
 		// Allow a voice_id to be an alternate model path or basename.
-		if strings.Contains(voiceID, string(os.PathSeparator)) || strings.HasSuffix(voiceID, ".onnx") {
+		if strings.Contains(voiceID, "/") || strings.Contains(voiceID, string(os.PathSeparator)) || strings.HasSuffix(voiceID, ".onnx") {
 			model = voiceID
-			cfg = strings.TrimSuffix(model, ".onnx") + ".onnx.json"
-			if _, err := os.Stat(cfg); err != nil {
-				cfg = ""
-			}
+		} else {
+			model = filepath.Join(filepath.Dir(p.Model), voiceID+".onnx")
+		}
+		candidateCfg := model + ".json"
+		if p.Config != "" {
+			cfg = candidateCfg
+		} else if _, err := os.Stat(candidateCfg); err == nil {
+			cfg = candidateCfg
+		} else {
+			cfg = ""
 		}
 	}
 

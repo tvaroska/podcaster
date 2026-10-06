@@ -2,11 +2,87 @@ package cover
 
 import (
 	"bytes"
+	"encoding/base64"
+	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"net/http"
 	"os"
+	"strings"
 )
+
+// MaxInlineImageBytes is the maximum decoded byte size of an inline data:image/* cover (5 MiB).
+const MaxInlineImageBytes = 5 << 20 // 5 MiB
+
+// IsInlineDataURI reports whether s is a data:image/... URI.
+func IsInlineDataURI(s string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(s)), "data:image/")
+}
+
+// DecodeInlineDataURI parses and validates a data:image/(png|jpeg);base64,<payload> URI.
+func DecodeInlineDataURI(raw string) (data []byte, contentType string, err error) {
+	s := strings.TrimSpace(raw)
+	if !IsInlineDataURI(s) {
+		return nil, "", errors.New("inline image must be a data:image/png;base64,... or data:image/jpeg;base64,... URI")
+	}
+	comma := strings.IndexByte(s, ',')
+	if comma < 0 {
+		return nil, "", errors.New("inline image data URI is missing comma separator")
+	}
+	header := strings.ToLower(strings.TrimSpace(s[len("data:"):comma]))
+	payload := s[comma+1:]
+	if !strings.HasSuffix(header, ";base64") {
+		return nil, "", errors.New("inline image data URI must use ;base64 encoding")
+	}
+	mediaType := strings.TrimSpace(strings.TrimSuffix(header, ";base64"))
+	switch mediaType {
+	case "image/png", "image/jpeg", "image/jpg":
+	default:
+		return nil, "", errors.New("inline image media type must be image/png or image/jpeg")
+	}
+	cleaned := strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
+			return -1
+		}
+		return r
+	}, payload)
+	if cleaned == "" {
+		return nil, "", errors.New("inline image base64 payload is empty")
+	}
+	if base64.StdEncoding.DecodedLen(len(cleaned)) > MaxInlineImageBytes+4 {
+		return nil, "", fmt.Errorf("inline image exceeds maximum size of %d bytes", MaxInlineImageBytes)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(cleaned)
+	if err != nil {
+		decoded, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(cleaned, "="))
+		if err != nil {
+			return nil, "", errors.New("inline image base64 payload is invalid")
+		}
+	}
+	if len(decoded) == 0 {
+		return nil, "", errors.New("inline image is empty")
+	}
+	if len(decoded) > MaxInlineImageBytes {
+		return nil, "", fmt.Errorf("inline image exceeds maximum size of %d bytes", MaxInlineImageBytes)
+	}
+	detected := http.DetectContentType(decoded)
+	if detected != "image/png" && detected != "image/jpeg" {
+		return nil, "", errors.New("inline image bytes must be a valid PNG or JPEG image")
+	}
+	return decoded, detected, nil
+}
+
+// PodcastCoverKey returns the storage object key for a custom podcast cover image.
+func PodcastCoverKey(podcastID string) string {
+	return "covers/podcasts/" + podcastID
+}
+
+// EpisodeCoverKey returns the storage object key for a custom episode cover image.
+func EpisodeCoverKey(episodeID string) string {
+	return "covers/episodes/" + episodeID
+}
 
 // Load returns PNG bytes from path, or a generated 1400x1400 fallback cover.
 func Load(path string) ([]byte, error) {

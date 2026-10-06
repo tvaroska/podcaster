@@ -25,7 +25,7 @@ Private podcasts for agents. An agent publishes text over **REST** or **MCP**; a
                     Apple Podcasts / Overcast / ...
 ```
 
-There is **one publisher** (the `AGENT_API_KEY`) and **many private shows**. Creating a user means creating a show: slug, title, unique password, feed at `/p/{id}/podcast.xml`. The default `/podcast.xml` is a separate show that uses `FEED_USERNAME` / `FEED_PASSWORD`.
+Credentials are separated into three roles: a **Super Key** (`ADMIN_API_KEY`, or `AGENT_API_KEY` when `ADMIN_API_KEY` is unset) to create and manage shows, a **Per-User Submit Key** (`submit_key`) scoped to publishing to a single show, and a **Per-User Listening Key** (`username`/`password` and `?token=`) for the podcast app at `/p/{id}/podcast.xml`. The default `/podcast.xml` is a separate show that uses `AGENT_API_KEY` for publishing and `FEED_USERNAME` / `FEED_PASSWORD` / `FEED_TOKEN` for listening.
 
 ---
 
@@ -88,24 +88,44 @@ make smoke
 
 ## Create a private show
 
-The agent is the publisher. A listener never signs up — you create their show and send them the subscribe URL.
+Creating a show requires the **Super Key** (`ADMIN_API_KEY`, or `AGENT_API_KEY` when `ADMIN_API_KEY` is unset). Each show returns two separate sets of credentials:
+
+- **Per-User Submit Key (`submit_key`)**: A Bearer token scoped to publishing and updating episodes (`PATCH /v1/episodes/{ep}`), checking episode status, viewing (`GET /v1/podcasts/{id}`) and updating (`PATCH /v1/podcasts/{id}`) the show's metadata, and rotating listening credentials for that show only. It cannot create or list other shows (`403`) and cannot read the RSS feed or MP3s.
+- **Per-User Listening Key (`username`, `password`, `token`, `subscribe_url`)**: Used by the listener's podcast app to fetch `/p/{id}/podcast.xml`, `/p/{id}/audio/*`, and `/p/{id}/episodes/{ep}/chapters.json`.
 
 ```bash
 curl -sS -X POST http://localhost:8080/v1/podcasts \
   -H "Authorization: Bearer dev-agent-key" \
   -H "Content-Type: application/json" \
-  -d '{"id":"alice","title":"Alice Briefing","description":"Private updates for Alice"}'
+  -d '{"id":"alice","title":"Alice Briefing","description":"Private updates for Alice","image_url":"https://example.com/alice-cover.png"}'
 ```
 
-Response includes `username`, `password`, `token`, `feed_url`, and `subscribe_url`. Store the password; it is also in the metadata store (SQLite / Firestore) and can be read again with `GET /v1/podcasts/alice`.
+Response includes `submit_key`, `username`, `password`, `token`, `feed_url`, and `subscribe_url`. Store the credentials; they are also in the metadata store (SQLite / Firestore) and can be retrieved again with `GET /v1/podcasts/alice`. You can update a show's `title`, `description`, `author`, or `image_url` at any time via `PATCH /v1/podcasts/alice` (or MCP `update_podcast`).
 
-Publish only to that feed:
+Publish only to that feed (using the show's `submit_key` or the Super Key), optionally including episode show notes (`description`), per-episode artwork (`image_url`), and chapter markers (`chapters`):
 
 ```bash
 curl -sS -X POST http://localhost:8080/v1/podcasts/alice/episodes \
-  -H "Authorization: Bearer dev-agent-key" \
+  -H "Authorization: Bearer $ALICE_SUBMIT_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"title":"Morning","content":"Good morning Alice. Here is your briefing."}'
+  -d '{
+    "title": "Morning Briefing",
+    "content": "Good morning Alice. Here is your briefing.",
+    "description": "Show notes and key links for today.",
+    "image_url": "https://example.com/episodes/morning.png",
+    "chapters": [{"start_seconds": 0, "title": "Intro"}, {"start_seconds": 15, "title": "Top Stories"}]
+  }'
+```
+
+Update an existing episode's `title`, `description`, `category`, `image_url`, or `chapters` without re-synthesizing audio via `PATCH /v1/episodes/{id}` (or MCP `update_episode`).
+
+Rotate Alice's listening credentials (`password` and `token`) if a feed or episode link leaks:
+
+```bash
+curl -sS -X POST http://localhost:8080/v1/podcasts/alice/rotate \
+  -H "Authorization: Bearer $ALICE_SUBMIT_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{}'
 ```
 
 Alice's app uses `http://alice:PASSWORD@localhost:8080/p/alice/podcast.xml`. Bob cannot read it. Episodes with a `podcast_id` never appear on the default `/podcast.xml`.
@@ -130,7 +150,7 @@ https://FEED_USERNAME:FEED_PASSWORD@host/podcast.xml
 
 Locally that is `http://podcast:podcast@localhost:8080/podcast.xml`.
 
-Players that reject `user:pass@host` can use `?token=` instead (`FEED_TOKEN` on the default show, or the show's `token` on `/p/{id}/...`). Enclosure URLs in the RSS already include that token so clients that do not replay Basic auth on media still play. **Sharing one episode link leaks that show's token.**
+Players that reject `user:pass@host` can use `?token=` instead (`FEED_TOKEN` on the default show, or the show's `token` on `/p/{id}/...`). Enclosure URLs in the RSS already include that token so clients that do not replay Basic auth on media still play. **Sharing one episode link leaks that show's token** — rotate leaked listening credentials via `POST /v1/podcasts/{id}/rotate` or the `rotate_podcast_credentials` MCP tool.
 
 - **Apple Podcasts**: Library → `…` → Follow a Show by URL
 - **Overcast**: `+` → Add URL
@@ -159,15 +179,21 @@ Claude Desktop / Claude Code (`claude_desktop_config.json`):
 }
 ```
 
-In production, use `https://YOUR_SERVICE/mcp` and the real `AGENT_API_KEY`.
+In production, use `https://YOUR_SERVICE/mcp` and the real `ADMIN_API_KEY`, `AGENT_API_KEY`, or per-show `submit_key`.
 
 | Tool | What |
 | --- | --- |
-| `create_podcast` | Create a private show. Returns username, password, token, feed URL. |
-| `publish_agent_update` | Queue an episode. Optional `podcast_id` (empty = default feed). |
-| `get_episode_status` | `QUEUED` → `PROCESSING` → `READY` or `FAILED`. |
+| `create_podcast` | Create a private show (requires Super Key), with optional `description`, `author`, and custom `image_url`. Returns `submit_key`, `username`, `password`, `token`, `feed_url`, `subscribe_url`. |
+| `update_podcast` | Update a show's `title`, `description`, `author`, and/or `image_url` (callable with Super Key or that show's `submit_key`). |
+| `list_podcasts` | List all private shows and their credentials/subscribe URLs (requires Super Key). |
+| `get_podcast` | Retrieve metadata, credentials (`submit_key`, `password`, `token`), and subscribe URL for a private show by slug. |
+| `rotate_podcast_credentials` | Rotate a show's listener `password`/`token` (default) and/or `submit_key`, returning the new `subscribe_url`. |
+| `publish_agent_update` | Queue an episode with optional `description` (show notes), `image_url` (episode icon), `chapters`, and `podcast_id` (empty = default feed, or the scoped show when using a `submit_key`). |
+| `update_episode` | Update an existing episode's `title`, `description`, `category`, `image_url`, and/or `chapters`. |
+| `get_episode_status` | `QUEUED` → `PROCESSING` → `READY` or `FAILED` (plus `description`, `image_url`, and `chapters`). |
+| `list_episodes` | List recent episodes with optional `status`, `podcast_id`, `only_default`, `limit`, and `offset` filters. |
 
-REST equivalents: `POST /v1/podcasts`, `POST /v1/podcasts/{id}/episodes`, `GET /v1/episodes/{id}`.
+REST equivalents: `POST /v1/podcasts`, `PATCH /v1/podcasts/{id}`, `GET /v1/podcasts`, `GET /v1/podcasts/{id}`, `POST /v1/podcasts/{id}/rotate`, `POST /v1/podcasts/{id}/episodes`, `PATCH /v1/episodes/{id}`, `GET /v1/episodes/{id}`, `GET /v1/episodes`.
 
 ---
 
@@ -183,7 +209,8 @@ make build
 
 | Variable | Local default | Notes |
 | --- | --- | --- |
-| `AGENT_API_KEY` | `dev-agent-key` | Bearer for REST + MCP |
+| `ADMIN_API_KEY` | — | Optional super key for creating/listing shows (`POST/GET /v1/podcasts`). When unset, `AGENT_API_KEY` acts as the super key. |
+| `AGENT_API_KEY` | `dev-agent-key` | Bearer for REST + MCP (default-feed submit key when `ADMIN_API_KEY` is set; super key otherwise) |
 | `FEED_USERNAME` / `FEED_PASSWORD` | `podcast` / `podcast` | Default show only |
 | `FEED_TOKEN` | `dev-feed-token` | Default show `?token=` |
 | `PUBLIC_BASE_URL` | `http://localhost:8080` | Absolute links in RSS. Must be the URL listeners use. |

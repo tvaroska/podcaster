@@ -1,5 +1,11 @@
 package tts
 
+// MP3DurationSeconds estimates duration from MPEG frames.
+// Prefers Xing/Info frame count when present, otherwise CBR from bitrate.
+func MP3DurationSeconds(b []byte) float64 {
+	return mp3DurationSeconds(b)
+}
+
 // mp3DurationSeconds estimates duration from MPEG frames.
 // Prefers Xing/Info frame count when present, otherwise CBR from bitrate.
 func mp3DurationSeconds(b []byte) float64 {

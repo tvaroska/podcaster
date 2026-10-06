@@ -26,6 +26,7 @@ const (
 type Config struct {
 	ListenAddr    string
 	PublicBaseURL string
+	AdminAPIKey   string
 	AgentAPIKey   string
 	FeedUsername  string
 	FeedPassword  string
@@ -70,12 +71,12 @@ type Config struct {
 }
 
 // FromEnv loads configuration. Missing local-dev secrets are filled with
-// documented defaults when PODCASTER_DEV=1 or no AGENT_API_KEY is set and
-// store/storage backends are local.
+// documented defaults when store, storage, and job backends are all local.
 func FromEnv() (*Config, error) {
 	c := &Config{
 		ListenAddr:         env("LISTEN_ADDR", DefaultListenAddr),
 		PublicBaseURL:      strings.TrimRight(env("PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
+		AdminAPIKey:        strings.TrimSpace(os.Getenv("ADMIN_API_KEY")),
 		AgentAPIKey:        os.Getenv("AGENT_API_KEY"),
 		FeedUsername:       env("FEED_USERNAME", ""),
 		FeedPassword:       env("FEED_PASSWORD", ""),
@@ -124,19 +125,26 @@ func FromEnv() (*Config, error) {
 	}
 
 	dev := envBool("PODCASTER_DEV", false)
-	if c.AgentAPIKey == "" && (dev || (c.StoreBackend == BackendSQLite && c.StorageBackend == BackendLocal && c.JobBackend == BackendLocal)) {
-		c.DevDefaults = true
+	isLocal := c.StoreBackend == BackendSQLite && c.StorageBackend == BackendLocal && c.JobBackend == BackendLocal
+	if isLocal && (dev || c.AgentAPIKey == "" || c.FeedUsername == "" || c.FeedPassword == "" || c.FeedToken == "") {
 		if c.AgentAPIKey == "" {
 			c.AgentAPIKey = "dev-agent-key"
+			c.DevDefaults = true
 		}
 		if c.FeedUsername == "" {
 			c.FeedUsername = "podcast"
+			c.DevDefaults = true
 		}
 		if c.FeedPassword == "" {
 			c.FeedPassword = "podcast"
+			c.DevDefaults = true
 		}
 		if c.FeedToken == "" {
 			c.FeedToken = "dev-feed-token"
+			c.DevDefaults = true
+		}
+		if dev {
+			c.DevDefaults = true
 		}
 	}
 
@@ -178,9 +186,6 @@ func (c *Config) Validate() error {
 		if c.GCSBucket == "" {
 			return fmt.Errorf("GCS_BUCKET is required when STORAGE_BACKEND=gcs")
 		}
-		if c.GCPProject == "" {
-			c.GCPProject = first(os.Getenv("GCP_PROJECT"), os.Getenv("GOOGLE_CLOUD_PROJECT"))
-		}
 	default:
 		return fmt.Errorf("unknown STORAGE_BACKEND %q (local|gcs)", c.StorageBackend)
 	}
@@ -214,6 +219,15 @@ func (c *Config) Limits() episode.Limits {
 
 func (c *Config) CoverURL() string {
 	return c.PublicBaseURL + "/cover.png"
+}
+
+// EffectiveAdminKey returns the super-admin key: AdminAPIKey when configured,
+// otherwise AgentAPIKey.
+func (c *Config) EffectiveAdminKey() string {
+	if c.AdminAPIKey != "" {
+		return c.AdminAPIKey
+	}
+	return c.AgentAPIKey
 }
 
 func env(key, fallback string) string {

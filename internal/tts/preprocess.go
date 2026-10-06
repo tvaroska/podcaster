@@ -1,6 +1,7 @@
 package tts
 
 import (
+	"html"
 	"regexp"
 	"strings"
 	"unicode"
@@ -8,7 +9,7 @@ import (
 )
 
 var (
-	ssmlTag    = regexp.MustCompile(`(?is)<[^>]+>`)
+	ssmlTag    = regexp.MustCompile(`(?is)</?[a-zA-Z][a-zA-Z0-9:_-]*(?:\s+[^>]*)?/?>`)
 	multiSpace = regexp.MustCompile(`[ \t]+`)
 	multiNL    = regexp.MustCompile(`\n{3,}`)
 )
@@ -18,6 +19,7 @@ const maxChunkRunes = 1800
 // Preprocess strips SSML, normalizes whitespace, and splits into TTS-friendly chunks.
 func Preprocess(text string) []string {
 	text = ssmlTag.ReplaceAllString(text, " ")
+	text = html.UnescapeString(text)
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 	text = multiSpace.ReplaceAllString(text, " ")
@@ -46,12 +48,12 @@ func chunk(text string, maxRunes int) []string {
 	}
 	for _, sentence := range splitSentences(text) {
 		n := utf8.RuneCountInString(sentence)
-		if runes > 0 && runes+n > maxRunes {
+		if runes > 0 && runes+1+n > maxRunes {
 			flush()
 		}
 		if n > maxRunes {
 			for _, part := range splitHard(sentence, maxRunes) {
-				if runes > 0 && runes+utf8.RuneCountInString(part) > maxRunes {
+				if runes > 0 && runes+1+utf8.RuneCountInString(part) > maxRunes {
 					flush()
 				}
 				if buf.Len() > 0 {

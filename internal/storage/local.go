@@ -50,11 +50,11 @@ func (l *Local) Put(_ context.Context, key string, r io.Reader, _ int64, _ strin
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
+	f, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
 	_, copyErr := io.Copy(f, r)
 	closeErr := f.Close()
 	if copyErr != nil {
@@ -65,7 +65,11 @@ func (l *Local) Put(_ context.Context, key string, r io.Reader, _ int64, _ strin
 		_ = os.Remove(tmp)
 		return closeErr
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func (l *Local) Open(_ context.Context, key string) (Object, error) {

@@ -139,6 +139,11 @@ func (w *Worker) Process(ctx context.Context, id string) error {
 			log.Warn("duration probe failed", "err", perr)
 		}
 	}
+	if duration <= 0 {
+		if b, rerr := os.ReadFile(tmpName); rerr == nil {
+			duration = tts.MP3DurationSeconds(b)
+		}
+	}
 
 	f, err := os.Open(tmpName)
 	if err != nil {
@@ -167,7 +172,9 @@ func (w *Worker) Process(ctx context.Context, id string) error {
 func (w *Worker) fail(ctx context.Context, ep *episode.Episode, cause error) error {
 	ep.Status = episode.StatusFailed
 	ep.ErrorMessage = cause.Error()
-	if err := w.Store.Update(ctx, ep); err != nil {
+	failCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := w.Store.Update(failCtx, ep); err != nil {
 		w.logger().Error("failed to persist FAILED status", "episode_id", ep.ID, "err", err, "cause", cause)
 	}
 	return cause

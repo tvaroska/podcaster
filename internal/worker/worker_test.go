@@ -243,3 +243,108 @@ func findBeep(t *testing.T) string {
 	t.Fatal("beep.mp3 not found")
 	return ""
 }
+
+type cancelOnSynthesizeEngine struct {
+	cancel context.CancelFunc
+}
+
+func (e cancelOnSynthesizeEngine) Synthesize(ctx context.Context, _ string, _ string) (*tts.Result, error) {
+	e.cancel()
+	return nil, ctx.Err()
+}
+
+func TestProcessMarksFailedOnCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	blob, err := storage.OpenLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := &episode.Episode{
+		ID:         "ep_cancel",
+		Title:      "Canceled",
+		ScriptText: "Good morning. This synthesis will time out.",
+		Status:     episode.StatusPending,
+		CreatedAt:  time.Now().UTC(),
+	}
+	if err := st.Create(context.Background(), ep); err != nil {
+		t.Fatal(err)
+	}
+	w := &Worker{
+		Store:   st,
+		Storage: blob,
+		Engine:  cancelOnSynthesizeEngine{cancel: cancel},
+	}
+	if err := w.Process(ctx, ep.ID); err == nil {
+		t.Fatal("expected error from canceled context")
+	}
+	got, err := st.Get(context.Background(), ep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != episode.StatusFailed || got.ErrorMessage == "" {
+		t.Fatalf("expected FAILED status with error message, got %+v", got)
+	}
+}
+
+type zeroDurationEngine struct {
+	mp3 []byte
+}
+
+func (e zeroDurationEngine) Synthesize(_ context.Context, _ string, _ string) (*tts.Result, error) {
+	return &tts.Result{
+		Reader:          io.NopCloser(bytes.NewReader(e.mp3)),
+		ContentType:     "audio/mpeg",
+		Extension:       "mp3",
+		DurationSeconds: 0,
+	}, nil
+}
+
+func TestProcessFallbackMP3Duration(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	blob, err := storage.OpenLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mp3, err := os.ReadFile(findBeep(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := &episode.Episode{
+		ID:         "ep_dur_fallback",
+		Title:      "Duration Fallback",
+		ScriptText: "Good morning. Testing pure-Go MP3 duration fallback.",
+		Status:     episode.StatusPending,
+		CreatedAt:  time.Now().UTC(),
+	}
+	if err := st.Create(ctx, ep); err != nil {
+		t.Fatal(err)
+	}
+	w := &Worker{
+		Store:     st,
+		Storage:   blob,
+		Engine:    zeroDurationEngine{mp3: mp3},
+		FFmpegBin: "/nonexistent/ffmpeg",
+	}
+	if err := w.Process(ctx, ep.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.Get(ctx, ep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DurationSeconds <= 0 {
+		t.Fatalf("expected positive fallback duration, got %v", got.DurationSeconds)
+	}
+}

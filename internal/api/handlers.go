@@ -16,6 +16,7 @@ import (
 	"github.com/tvaroska/podcaster/internal/app"
 	"github.com/tvaroska/podcaster/internal/auth"
 	"github.com/tvaroska/podcaster/internal/config"
+	"github.com/tvaroska/podcaster/internal/cover"
 	"github.com/tvaroska/podcaster/internal/episode"
 	"github.com/tvaroska/podcaster/internal/podcast"
 	"github.com/tvaroska/podcaster/internal/rss"
@@ -23,7 +24,7 @@ import (
 	"github.com/tvaroska/podcaster/internal/store"
 )
 
-const maxBody = 1 << 20 // 1 MiB JSON body
+const maxBody = 8 << 20 // 8 MiB JSON body (allows up to 5 MiB base64 inline image)
 
 type Handler struct {
 	App   *app.App
@@ -55,14 +56,23 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("POST /v1/episodes", h.requireAgent(h.createEpisode))
 	mux.HandleFunc("GET /v1/episodes", h.requireAgent(h.listEpisodes))
 	mux.HandleFunc("GET /v1/episodes/{id}", h.requireAgent(h.getEpisode))
+	mux.HandleFunc("PATCH /v1/episodes/{id}", h.requireAgent(h.updateEpisode))
+	mux.HandleFunc("PUT /v1/episodes/{id}", h.requireAgent(h.updateEpisode))
 	mux.HandleFunc("POST /v1/podcasts", h.requireAgent(h.createPodcast))
 	mux.HandleFunc("GET /v1/podcasts", h.requireAgent(h.listPodcasts))
 	mux.HandleFunc("GET /v1/podcasts/{id}", h.requireAgent(h.getPodcast))
+	mux.HandleFunc("PATCH /v1/podcasts/{id}", h.requireAgent(h.updatePodcast))
+	mux.HandleFunc("PUT /v1/podcasts/{id}", h.requireAgent(h.updatePodcast))
+	mux.HandleFunc("POST /v1/podcasts/{id}/rotate", h.requireAgent(h.rotatePodcast))
 	mux.HandleFunc("POST /v1/podcasts/{id}/episodes", h.requireAgent(h.createPodcastEpisode))
 	mux.HandleFunc("GET /podcast.xml", h.requireFeed(h.podcastXML))
 	mux.HandleFunc("HEAD /podcast.xml", h.requireFeed(h.podcastXML))
 	mux.HandleFunc("GET /feed.xml", h.requireFeed(h.podcastXML))
 	mux.HandleFunc("HEAD /feed.xml", h.requireFeed(h.podcastXML))
+	mux.HandleFunc("GET /episodes/{id}/chapters.json", h.requireFeed(h.chaptersJSON))
+	mux.HandleFunc("HEAD /episodes/{id}/chapters.json", h.requireFeed(h.chaptersJSON))
+	mux.HandleFunc("GET /episodes/{id}/cover.png", h.episodeCover)
+	mux.HandleFunc("HEAD /episodes/{id}/cover.png", h.episodeCover)
 	mux.HandleFunc("GET /audio/{file}", h.requireFeed(h.audio))
 	mux.HandleFunc("HEAD /audio/{file}", h.requireFeed(h.audio))
 	mux.HandleFunc("GET /cover.png", h.cover)
@@ -71,6 +81,10 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("HEAD /p/{id}/podcast.xml", h.requirePodcastFeed(h.podcastXML))
 	mux.HandleFunc("GET /p/{id}/feed.xml", h.requirePodcastFeed(h.podcastXML))
 	mux.HandleFunc("HEAD /p/{id}/feed.xml", h.requirePodcastFeed(h.podcastXML))
+	mux.HandleFunc("GET /p/{id}/episodes/{ep}/chapters.json", h.requirePodcastFeed(h.chaptersJSON))
+	mux.HandleFunc("HEAD /p/{id}/episodes/{ep}/chapters.json", h.requirePodcastFeed(h.chaptersJSON))
+	mux.HandleFunc("GET /p/{id}/episodes/{ep}/cover.png", h.episodeCover)
+	mux.HandleFunc("HEAD /p/{id}/episodes/{ep}/cover.png", h.episodeCover)
 	mux.HandleFunc("GET /p/{id}/audio/{file}", h.requirePodcastFeed(h.audio))
 	mux.HandleFunc("HEAD /p/{id}/audio/{file}", h.requirePodcastFeed(h.audio))
 	mux.HandleFunc("GET /p/{id}/cover.png", h.cover)
@@ -96,22 +110,56 @@ func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
+func principalOrAdmin(ctx context.Context) auth.Principal {
+	if p, ok := auth.PrincipalFrom(ctx); ok && p.Role != "" {
+		return p
+	}
+	return auth.Principal{Role: auth.RoleAdmin}
+}
+
 func (h *Handler) createEpisode(w http.ResponseWriter, r *http.Request) {
 	var in episode.CreateInput
 	if err := decodeJSON(r, &in); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody("invalid json: "+err.Error()))
 		return
 	}
+	p := principalOrAdmin(r.Context())
+	podcastID := strings.ToLower(strings.TrimSpace(in.PodcastID))
+	switch p.Role {
+	case auth.RoleDefaultSubmitter:
+		if podcastID != "" {
+			writeError(w, http.StatusForbidden, "forbidden", "default submit key cannot publish to a user podcast", "podcast_id")
+			return
+		}
+	case auth.RolePodcastSubmitter:
+		if podcastID == "" {
+			in.PodcastID = p.PodcastID
+		} else if podcastID != p.PodcastID {
+			writeError(w, http.StatusForbidden, "forbidden", "submit key is scoped to podcast "+p.PodcastID, "podcast_id")
+			return
+		}
+	}
 	h.enqueueEpisode(w, r, in)
 }
 
 func (h *Handler) createPodcastEpisode(w http.ResponseWriter, r *http.Request) {
+	pathID := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	p := principalOrAdmin(r.Context())
+	if p.Role != auth.RoleAdmin && !(p.Role == auth.RolePodcastSubmitter && p.PodcastID == pathID) {
+		writeError(w, http.StatusForbidden, "forbidden", "not authorized to publish to this podcast", "podcast_id")
+		return
+	}
 	var in episode.CreateInput
 	if err := decodeJSON(r, &in); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody("invalid json: "+err.Error()))
 		return
 	}
-	in.PodcastID = r.PathValue("id")
+	if in.PodcastID != "" && strings.ToLower(strings.TrimSpace(in.PodcastID)) != pathID {
+		ve := &episode.ValidationError{Field: "podcast_id", Message: "podcast_id in body does not match URL path"}
+		writeJSON(w, http.StatusUnprocessableEntity, errorBody(ve.Error()))
+		return
+	}
+	in.PodcastID = pathID
 	h.enqueueEpisode(w, r, in)
 }
 
@@ -139,12 +187,17 @@ func (h *Handler) enqueueEpisode(w http.ResponseWriter, r *http.Request, in epis
 }
 
 func (h *Handler) createPodcast(w http.ResponseWriter, r *http.Request) {
+	p := principalOrAdmin(r.Context())
+	if p.Role != auth.RoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden", "admin key required to create podcasts", "")
+		return
+	}
 	var in podcast.CreateInput
 	if err := decodeJSON(r, &in); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody("invalid json: "+err.Error()))
 		return
 	}
-	p, err := h.App.CreatePodcast(r.Context(), in)
+	show, err := h.App.CreatePodcast(r.Context(), in)
 	if err != nil {
 		var ve *episode.ValidationError
 		if errors.As(err, &ve) {
@@ -159,10 +212,15 @@ func (h *Handler) createPodcast(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorBody("failed to create podcast"))
 		return
 	}
-	writeJSON(w, http.StatusCreated, h.podcastJSON(p))
+	writeJSON(w, http.StatusCreated, h.podcastJSON(show))
 }
 
 func (h *Handler) listPodcasts(w http.ResponseWriter, r *http.Request) {
+	p := principalOrAdmin(r.Context())
+	if p.Role != auth.RoleAdmin {
+		writeError(w, http.StatusForbidden, "forbidden", "admin key required to list podcasts", "")
+		return
+	}
 	list, err := h.App.Store.ListPodcasts(r.Context())
 	if err != nil {
 		h.logger().Error("list podcasts", "err", err)
@@ -170,31 +228,108 @@ func (h *Handler) listPodcasts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]map[string]any, 0, len(list))
-	for _, p := range list {
-		out = append(out, h.podcastJSON(p))
+	for _, show := range list {
+		out = append(out, h.podcastJSON(show))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"podcasts": out})
 }
 
 func (h *Handler) getPodcast(w http.ResponseWriter, r *http.Request) {
-	p, err := h.App.Store.GetPodcast(r.Context(), r.PathValue("id"))
+	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	p := principalOrAdmin(r.Context())
+	if p.Role != auth.RoleAdmin && !(p.Role == auth.RolePodcastSubmitter && p.PodcastID == id) {
+		writeError(w, http.StatusForbidden, "forbidden", "not authorized to view this podcast", "")
+		return
+	}
+	show, err := h.App.Store.GetPodcast(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeJSON(w, http.StatusNotFound, errorBody("podcast not found"))
 			return
 		}
+		h.logger().Error("get podcast", "err", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody("failed to load podcast"))
 		return
 	}
-	writeJSON(w, http.StatusOK, h.podcastJSON(p))
+	writeJSON(w, http.StatusOK, h.podcastJSON(show))
+}
+
+func (h *Handler) updatePodcast(w http.ResponseWriter, r *http.Request) {
+	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	p := principalOrAdmin(r.Context())
+	if p.Role != auth.RoleAdmin && !(p.Role == auth.RolePodcastSubmitter && p.PodcastID == id) {
+		writeError(w, http.StatusForbidden, "forbidden", "not authorized to update this podcast", "")
+		return
+	}
+	var in podcast.UpdateInput
+	if err := decodeJSON(r, &in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid json: "+err.Error()))
+		return
+	}
+	show, err := h.App.UpdatePodcast(r.Context(), id, in)
+	if err != nil {
+		var ve *episode.ValidationError
+		if errors.As(err, &ve) {
+			writeJSON(w, http.StatusUnprocessableEntity, errorBody(ve.Error()))
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, errorBody("podcast not found"))
+			return
+		}
+		h.logger().Error("update podcast", "err", err)
+		writeJSON(w, http.StatusInternalServerError, errorBody("failed to update podcast"))
+		return
+	}
+	writeJSON(w, http.StatusOK, h.podcastJSON(show))
+}
+
+func (h *Handler) rotatePodcast(w http.ResponseWriter, r *http.Request) {
+	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	p := principalOrAdmin(r.Context())
+	if p.Role != auth.RoleAdmin && !(p.Role == auth.RolePodcastSubmitter && p.PodcastID == id) {
+		writeError(w, http.StatusForbidden, "forbidden", "not authorized to rotate credentials for this podcast", "")
+		return
+	}
+	var opts podcast.RotateOptions
+	if r.Body != nil {
+		if err := decodeJSON(r, &opts); err != nil {
+			if !errors.Is(err, io.EOF) {
+				writeJSON(w, http.StatusBadRequest, errorBody("invalid json: "+err.Error()))
+				return
+			}
+			opts = podcast.RotateOptions{RotateListener: true}
+		}
+	} else {
+		opts = podcast.RotateOptions{RotateListener: true}
+	}
+	show, err := h.App.RotatePodcastCredentials(r.Context(), id, opts)
+	if err != nil {
+		var ve *episode.ValidationError
+		if errors.As(err, &ve) {
+			writeJSON(w, http.StatusUnprocessableEntity, errorBody(ve.Error()))
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, errorBody("podcast not found"))
+			return
+		}
+		h.logger().Error("rotate podcast credentials", "err", err)
+		writeJSON(w, http.StatusInternalServerError, errorBody("failed to rotate podcast credentials"))
+		return
+	}
+	writeJSON(w, http.StatusOK, h.podcastJSON(show))
 }
 
 func (h *Handler) podcastJSON(p *podcast.Podcast) map[string]any {
-	feed := h.Cfg.PublicBaseURL + p.FeedPath()
+	base := h.Cfg.PublicBaseURL
+	if h.App != nil && h.App.Cfg != nil && h.App.Cfg.PublicBaseURL != "" {
+		base = h.App.Cfg.PublicBaseURL
+	}
+	feed := base + p.FeedPath()
 	subscribe := feed
-	if u, err := url.Parse(h.Cfg.PublicBaseURL); err == nil {
+	if u, err := url.Parse(feed); err == nil {
 		u.User = url.UserPassword(p.Username, p.Password)
-		u.Path = p.FeedPath()
 		subscribe = u.String()
 	}
 	return map[string]any{
@@ -202,9 +337,11 @@ func (h *Handler) podcastJSON(p *podcast.Podcast) map[string]any {
 		"title":         p.Title,
 		"description":   p.Description,
 		"author":        p.Author,
+		"image_url":     p.ImageURL,
 		"username":      p.Username,
 		"password":      p.Password,
 		"token":         p.Token,
+		"submit_key":    p.SubmitKey,
 		"feed_url":      feed,
 		"subscribe_url": subscribe,
 		"created_at":    p.CreatedAt.UTC().Format(time.RFC3339),
@@ -214,12 +351,33 @@ func (h *Handler) podcastJSON(p *podcast.Podcast) map[string]any {
 func (h *Handler) listEpisodes(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
+	if limit > 100 {
+		limit = 100
+	}
 	offset, _ := strconv.Atoi(q.Get("offset"))
+	onlyDefaultVal := strings.ToLower(strings.TrimSpace(q.Get("only_default")))
+	onlyDefault := onlyDefaultVal == "true" || onlyDefaultVal == "1"
 	filter := episode.ListFilter{
-		Status:    episode.Status(strings.ToUpper(q.Get("status"))),
-		PodcastID: strings.ToLower(strings.TrimSpace(q.Get("podcast_id"))),
-		Limit:     limit,
-		Offset:    offset,
+		Status:      episode.Status(strings.ToUpper(strings.TrimSpace(q.Get("status")))),
+		PodcastID:   strings.ToLower(strings.TrimSpace(q.Get("podcast_id"))),
+		OnlyDefault: onlyDefault,
+		Limit:       limit,
+		Offset:      offset,
+	}
+	p := principalOrAdmin(r.Context())
+	switch p.Role {
+	case auth.RoleDefaultSubmitter:
+		if filter.PodcastID != "" {
+			writeError(w, http.StatusForbidden, "forbidden", "default submit key cannot list episodes for a user podcast", "podcast_id")
+			return
+		}
+		filter.OnlyDefault = true
+	case auth.RolePodcastSubmitter:
+		if filter.OnlyDefault || (filter.PodcastID != "" && filter.PodcastID != p.PodcastID) {
+			writeError(w, http.StatusForbidden, "forbidden", "submit key is scoped to podcast "+p.PodcastID, "podcast_id")
+			return
+		}
+		filter.PodcastID = p.PodcastID
 	}
 	list, err := h.App.Store.List(r.Context(), filter)
 	if err != nil {
@@ -228,13 +386,16 @@ func (h *Handler) listEpisodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type item struct {
-		EpisodeID       string  `json:"episode_id"`
-		PodcastID       string  `json:"podcast_id,omitempty"`
-		Title           string  `json:"title"`
-		Status          string  `json:"status"`
-		Category        string  `json:"category,omitempty"`
-		DurationSeconds float64 `json:"duration_seconds,omitempty"`
-		CreatedAt       string  `json:"created_at"`
+		EpisodeID       string            `json:"episode_id"`
+		PodcastID       string            `json:"podcast_id,omitempty"`
+		Title           string            `json:"title"`
+		Description     string            `json:"description,omitempty"`
+		Status          string            `json:"status"`
+		Category        string            `json:"category,omitempty"`
+		ImageURL        string            `json:"image_url,omitempty"`
+		Chapters        []episode.Chapter `json:"chapters,omitempty"`
+		DurationSeconds float64           `json:"duration_seconds,omitempty"`
+		CreatedAt       string            `json:"created_at"`
 	}
 	out := make([]item, 0, len(list))
 	for _, ep := range list {
@@ -242,8 +403,11 @@ func (h *Handler) listEpisodes(w http.ResponseWriter, r *http.Request) {
 			EpisodeID:       ep.ID,
 			PodcastID:       ep.PodcastID,
 			Title:           ep.Title,
+			Description:     ep.Description,
 			Status:          string(ep.PublicStatus()),
 			Category:        ep.Category,
+			ImageURL:        ep.ImageURL,
+			Chapters:        ep.Chapters,
 			DurationSeconds: ep.DurationSeconds,
 			CreatedAt:       ep.CreatedAt.UTC().Format(time.RFC3339),
 		})
@@ -259,29 +423,97 @@ func (h *Handler) getEpisode(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, errorBody("episode not found"))
 			return
 		}
+		h.logger().Error("get episode", "err", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody("failed to load episode"))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	p := principalOrAdmin(r.Context())
+	if p.Role == auth.RoleDefaultSubmitter && ep.PodcastID != "" {
+		writeError(w, http.StatusForbidden, "forbidden", "default submit key cannot access user podcast episode", "")
+		return
+	}
+	if p.Role == auth.RolePodcastSubmitter && ep.PodcastID != p.PodcastID {
+		writeError(w, http.StatusForbidden, "forbidden", "submit key is scoped to podcast "+p.PodcastID, "")
+		return
+	}
+	writeJSON(w, http.StatusOK, episodeStatusJSON(ep))
+}
+
+func (h *Handler) updateEpisode(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	ep, err := h.App.Store.Get(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, errorBody("episode not found"))
+			return
+		}
+		h.logger().Error("get episode for update", "err", err)
+		writeJSON(w, http.StatusInternalServerError, errorBody("failed to load episode"))
+		return
+	}
+	p := principalOrAdmin(r.Context())
+	if p.Role == auth.RoleDefaultSubmitter && ep.PodcastID != "" {
+		writeError(w, http.StatusForbidden, "forbidden", "default submit key cannot update user podcast episode", "")
+		return
+	}
+	if p.Role == auth.RolePodcastSubmitter && ep.PodcastID != p.PodcastID {
+		writeError(w, http.StatusForbidden, "forbidden", "submit key is scoped to podcast "+p.PodcastID, "")
+		return
+	}
+	var in episode.UpdateInput
+	if err := decodeJSON(r, &in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid json: "+err.Error()))
+		return
+	}
+	updated, err := h.App.UpdateEpisode(r.Context(), id, in)
+	if err != nil {
+		var ve *episode.ValidationError
+		if errors.As(err, &ve) {
+			writeJSON(w, http.StatusUnprocessableEntity, errorBody(ve.Error()))
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, errorBody("episode not found"))
+			return
+		}
+		h.logger().Error("update episode", "err", err)
+		writeJSON(w, http.StatusInternalServerError, errorBody("failed to update episode"))
+		return
+	}
+	writeJSON(w, http.StatusOK, episodeStatusJSON(updated))
+}
+
+func episodeStatusJSON(ep *episode.Episode) map[string]any {
+	out := map[string]any{
 		"episode_id":       ep.ID,
 		"podcast_id":       ep.PodcastID,
 		"title":            ep.Title,
+		"description":      ep.Description,
 		"status":           ep.PublicStatus(),
 		"category":         ep.Category,
 		"voice_id":         ep.VoiceID,
+		"image_url":        ep.ImageURL,
 		"duration_seconds": ep.DurationSeconds,
 		"file_size_bytes":  ep.FileSizeBytes,
 		"error_message":    ep.ErrorMessage,
 		"created_at":       ep.CreatedAt.UTC().Format(time.RFC3339),
 		"published_at":     formatTime(ep.PublishedAt),
-	})
+	}
+	if len(ep.Chapters) > 0 {
+		out["chapters"] = ep.Chapters
+	}
+	return out
 }
 
 func (h *Handler) podcastXML(w http.ResponseWriter, r *http.Request) {
+	base := h.Cfg.PublicBaseURL
+	if h.App != nil && h.App.Cfg != nil && h.App.Cfg.PublicBaseURL != "" {
+		base = h.App.Cfg.PublicBaseURL
+	}
 	filter := episode.ListFilter{Status: episode.StatusReady, Limit: 100}
 	ch := rss.Channel{
 		Title:       h.Cfg.PodcastTitle,
-		Link:        h.Cfg.PublicBaseURL,
+		Link:        base,
 		Description: h.Cfg.PodcastDescription,
 		Language:    h.Cfg.PodcastLanguage,
 		Author:      h.Cfg.PodcastAuthor,
@@ -289,11 +521,13 @@ func (h *Handler) podcastXML(w http.ResponseWriter, r *http.Request) {
 		Category:    h.Cfg.PodcastCategory,
 		Explicit:    h.Cfg.PodcastExplicit,
 		ImageURL:    h.Cfg.CoverURL(),
-		FeedURL:     h.Cfg.PublicBaseURL + "/podcast.xml",
+		FeedURL:     base + "/podcast.xml",
 	}
-	opt := rss.ItemOptions{
-		BaseURL: h.Cfg.PublicBaseURL,
-		Token:   h.feed().ExpectedToken(),
+	opt := rss.Options{
+		BaseURL:      base,
+		Token:        h.feed().ExpectedToken(),
+		ChaptersPath: "/episodes",
+		CoverURL:     ch.ImageURL,
 	}
 	if show := podcastFrom(r); show != nil {
 		filter.PodcastID = show.ID
@@ -302,11 +536,17 @@ func (h *Handler) podcastXML(w http.ResponseWriter, r *http.Request) {
 		if show.Author != "" {
 			ch.Author = show.Author
 		}
-		ch.Link = h.Cfg.PublicBaseURL + "/p/" + show.ID
-		ch.FeedURL = h.Cfg.PublicBaseURL + show.FeedPath()
-		ch.ImageURL = h.Cfg.PublicBaseURL + show.CoverPath()
+		ch.Link = base + "/p/" + show.ID
+		ch.FeedURL = base + show.FeedPath()
+		coverURL := base + show.CoverPath()
+		if show.ImageURL != "" {
+			coverURL = show.ImageURL
+		}
+		ch.ImageURL = coverURL
+		opt.CoverURL = coverURL
 		opt.Token = show.Token
 		opt.AudioPath = show.AudioPath()
+		opt.ChaptersPath = "/p/" + show.ID + "/episodes"
 	} else {
 		filter.OnlyDefault = true
 	}
@@ -325,6 +565,59 @@ func (h *Handler) podcastXML(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, max-age=60")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+func (h *Handler) chaptersJSON(w http.ResponseWriter, r *http.Request) {
+	var podcastID string
+	if show := podcastFrom(r); show != nil {
+		podcastID = show.ID
+	}
+	epID := strings.TrimSpace(r.PathValue("ep"))
+	if epID == "" {
+		epID = strings.TrimSpace(r.PathValue("id"))
+	}
+	if epID == "" {
+		http.NotFound(w, r)
+		return
+	}
+	ep, err := h.App.Store.Get(r.Context(), epID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		h.logger().Error("load episode for chapters", "err", err, "episode_id", epID)
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if ep.PodcastID != podcastID {
+		http.NotFound(w, r)
+		return
+	}
+	type jsonChapter struct {
+		StartTime float64 `json:"startTime"`
+		Title     string  `json:"title"`
+		URL       string  `json:"url,omitempty"`
+		Img       string  `json:"img,omitempty"`
+	}
+	chapters := make([]jsonChapter, 0, len(ep.Chapters))
+	for _, ch := range ep.Chapters {
+		chapters = append(chapters, jsonChapter{
+			StartTime: ch.StartSeconds,
+			Title:     ch.Title,
+			URL:       ch.URL,
+			Img:       ch.ImageURL,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json+chapters; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"version":  "1.2.0",
+		"chapters": chapters,
+	})
 }
 
 func (h *Handler) audio(w http.ResponseWriter, r *http.Request) {
@@ -400,10 +693,76 @@ func (h *Handler) audio(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, file, mod, obj)
 }
 
+var coverModTime = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
 func (h *Handler) cover(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "image/png")
+	if strings.HasPrefix(r.URL.Path, "/p/") {
+		if id := strings.ToLower(strings.TrimSpace(r.PathValue("id"))); id != "" && h.App != nil && h.App.Storage != nil {
+			if rc, err := h.App.Storage.Open(r.Context(), cover.PodcastCoverKey(id)); err == nil {
+				data, readErr := io.ReadAll(rc)
+				_ = rc.Close()
+				if readErr == nil && len(data) > 0 {
+					h.serveCoverBytes(w, r, data, rc.Stat().LastModified)
+					return
+				}
+			}
+		}
+	}
+	h.serveCoverBytes(w, r, h.Cover, coverModTime)
+}
+
+func (h *Handler) episodeCover(w http.ResponseWriter, r *http.Request) {
+	epID := strings.TrimSpace(r.PathValue("ep"))
+	var podID string
+	if epID != "" {
+		podID = strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	} else {
+		epID = strings.TrimSpace(r.PathValue("id"))
+	}
+	if epID == "" || h.App == nil || h.App.Store == nil {
+		http.NotFound(w, r)
+		return
+	}
+	ep, err := h.App.Store.Get(r.Context(), epID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		h.logger().Error("load episode for cover", "err", err, "episode_id", epID)
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if ep.PodcastID != podID {
+		http.NotFound(w, r)
+		return
+	}
+	if h.App.Storage != nil {
+		if rc, err := h.App.Storage.Open(r.Context(), cover.EpisodeCoverKey(ep.ID)); err == nil {
+			data, readErr := io.ReadAll(rc)
+			_ = rc.Close()
+			if readErr == nil && len(data) > 0 {
+				h.serveCoverBytes(w, r, data, rc.Stat().LastModified)
+				return
+			}
+		}
+	}
+	h.cover(w, r)
+}
+
+func (h *Handler) serveCoverBytes(w http.ResponseWriter, r *http.Request, data []byte, mod time.Time) {
+	ct := "image/png"
+	if len(data) > 0 {
+		if detected := http.DetectContentType(data); detected != "" && detected != "application/octet-stream" {
+			ct = detected
+		}
+	}
+	if mod.IsZero() {
+		mod = coverModTime
+	}
+	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeContent(w, r, "cover.png", time.Unix(0, 0).UTC(), bytes.NewReader(h.Cover))
+	http.ServeContent(w, r, "cover.png", mod, bytes.NewReader(data))
 }
 
 func parseAudioFile(file string) (id string, ok bool) {
@@ -425,21 +784,55 @@ func parseAudioFile(file string) (id string, ok bool) {
 
 func (h *Handler) requireAgent(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !auth.APIKeyMatch(auth.Bearer(r), h.Cfg.AgentAPIKey) {
+		token := auth.Bearer(r)
+		var (
+			principal auth.Principal
+			ok        bool
+			err       error
+		)
+		if h.App != nil {
+			principal, ok, err = h.App.AuthenticateBearer(r.Context(), token)
+		} else if h.Cfg != nil && auth.APIKeyMatch(token, h.Cfg.AgentAPIKey) {
+			principal = auth.Principal{Role: auth.RoleAdmin}
+			ok = true
+		}
+		if err != nil {
+			h.logger().Error("authenticate bearer", "err", err)
+			writeJSON(w, http.StatusInternalServerError, errorBody("authentication error"))
+			return
+		}
+		if !ok {
 			writeJSON(w, http.StatusUnauthorized, errorBody("invalid or missing bearer token"))
 			return
 		}
-		next(w, r)
+		next(w, r.WithContext(auth.WithPrincipal(r.Context(), principal)))
 	}
 }
 
 func (h *Handler) requireAgentHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !auth.APIKeyMatch(auth.Bearer(r), h.Cfg.AgentAPIKey) {
+		token := auth.Bearer(r)
+		var (
+			principal auth.Principal
+			ok        bool
+			err       error
+		)
+		if h.App != nil {
+			principal, ok, err = h.App.AuthenticateBearer(r.Context(), token)
+		} else if h.Cfg != nil && auth.APIKeyMatch(token, h.Cfg.AgentAPIKey) {
+			principal = auth.Principal{Role: auth.RoleAdmin}
+			ok = true
+		}
+		if err != nil {
+			h.logger().Error("authenticate bearer", "err", err)
+			writeJSON(w, http.StatusInternalServerError, errorBody("authentication error"))
+			return
+		}
+		if !ok {
 			writeJSON(w, http.StatusUnauthorized, errorBody("invalid or missing bearer token"))
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), principal)))
 	})
 }
 
@@ -471,6 +864,15 @@ func (h *Handler) requirePodcastFeed(next http.HandlerFunc) http.HandlerFunc {
 		id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
 		p, err := h.App.Store.GetPodcast(r.Context(), id)
 		if err != nil {
+			if !errors.Is(err, store.ErrNotFound) {
+				if h.App != nil && h.App.Log != nil {
+					h.App.Log.Error("load podcast for feed", "err", err, "podcast_id", id)
+				} else {
+					h.logger().Error("load podcast for feed", "err", err, "podcast_id", id)
+				}
+				writeJSON(w, http.StatusInternalServerError, errorBody("failed to load podcast"))
+				return
+			}
 			auth.UnauthorizedFeed(w)
 			return
 		}
@@ -501,6 +903,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func errorBody(msg string) map[string]string {
 	return map[string]string{"error": msg}
+}
+
+func writeError(w http.ResponseWriter, status int, _, msg, _ string) {
+	writeJSON(w, status, errorBody(msg))
 }
 
 func formatTime(t *time.Time) any {

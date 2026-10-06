@@ -26,6 +26,8 @@ type Store interface {
 	CreatePodcast(ctx context.Context, p *podcast.Podcast) error
 	GetPodcast(ctx context.Context, id string) (*podcast.Podcast, error)
 	ListPodcasts(ctx context.Context) ([]*podcast.Podcast, error)
+	UpdatePodcast(ctx context.Context, p *podcast.Podcast) error
+	GetPodcastBySubmitKey(ctx context.Context, submitKey string) (*podcast.Podcast, error)
 
 	Ping(ctx context.Context) error
 	Close() error

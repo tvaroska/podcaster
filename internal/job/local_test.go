@@ -2,6 +2,8 @@ package job
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -68,5 +70,48 @@ func TestLocalDispatcherClosed(t *testing.T) {
 	}
 	if err := d.TryEnqueue("ep_after_close"); err != ErrDispatcherClosed {
 		t.Fatalf("expected ErrDispatcherClosed, got %v", err)
+	}
+}
+
+func TestLocalDispatcherEmptyID(t *testing.T) {
+	d := NewLocal(func(ctx context.Context, id string) error {
+		return nil
+	}, 1, time.Second, nil)
+	defer d.Close()
+
+	if err := d.Enqueue(context.Background(), "   "); !errors.Is(err, ErrEpisodeIDRequired) {
+		t.Fatalf("expected ErrEpisodeIDRequired, got %v", err)
+	}
+	if err := d.TryEnqueue(""); !errors.Is(err, ErrEpisodeIDRequired) {
+		t.Fatalf("expected ErrEpisodeIDRequired, got %v", err)
+	}
+}
+
+func TestLocalDispatcherConcurrentClose(t *testing.T) {
+	for iter := 0; iter < 20; iter++ {
+		d := NewLocalWithQueueSize(func(ctx context.Context, id string) error {
+			time.Sleep(time.Millisecond)
+			return nil
+		}, 2, 2, time.Second, nil)
+
+		var wg sync.WaitGroup
+		for i := 0; i < 16; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := 0; j < 20; j++ {
+					_ = d.Enqueue(context.Background(), "ep_race")
+					_ = d.TryEnqueue("ep_race")
+				}
+			}()
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(2 * time.Millisecond)
+			d.Close()
+		}()
+		wg.Wait()
+		d.Close()
 	}
 }

@@ -73,6 +73,9 @@ func probeWithFFmpeg(ctx context.Context, ffmpegBin, path string) (float64, erro
 
 // ConcatWAV concatenates WAV files with ffmpeg concat demuxer.
 func ConcatWAV(ctx context.Context, ffmpegBin string, inputs []string, dest string) error {
+	if ffmpegBin == "" {
+		ffmpegBin = "ffmpeg"
+	}
 	if len(inputs) == 0 {
 		return fmt.Errorf("no wav inputs")
 	}
@@ -132,6 +135,9 @@ func escapeConcat(path string) string {
 
 // EncodeMP3 converts a WAV (or any ffmpeg-readable) file to 128kbps mono MP3.
 func EncodeMP3(ctx context.Context, ffmpegBin, src, dest string) error {
+	if ffmpegBin == "" {
+		ffmpegBin = "ffmpeg"
+	}
 	cmd := exec.CommandContext(ctx, ffmpegBin,
 		"-y", "-i", src,
 		"-codec:a", "libmp3lame",
