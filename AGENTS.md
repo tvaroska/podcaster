@@ -18,7 +18,7 @@ make run          # runs bin/server with local dev defaults (does NOT read .env)
 make smoke        # end-to-end ingest + RSS test against localhost:8080
 ```
 
-Always run `go test ./...` and `go vet ./...` before finishing any code change.
+Always run `go test ./...` and `go vet ./...` before finishing any code change. When running live/manual tests against a deployed environment, always use the `demo` user (`podcast_id: "demo"`) rather than production user feeds.
 
 ## Package Boundaries
 
