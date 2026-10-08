@@ -35,6 +35,7 @@ Credentials are separated into three roles: a **Super Key** (`ADMIN_API_KEY`, or
 - [Create a private show](#create-a-private-show)
 - [Subscribe in a podcast app](#subscribe-in-a-podcast-app)
 - [Agent / MCP](#agent--mcp)
+- [Voices & audio pipeline](#voices--audio-pipeline)
 - [Configuration](#configuration)
 - [Production (GCP)](#production-gcp)
 - [Development commands](#development-commands)
@@ -45,7 +46,7 @@ Credentials are separated into three roles: a **Super Key** (`ADMIN_API_KEY`, or
 
 ## Quick start (local)
 
-Requires **Go 1.26** (see `go.mod`) and optionally **ffmpeg** (needed for Piper, not for the mock voice).
+Requires **Go 1.26** (see `go.mod`) and optionally **ffmpeg** (needed for Kokoro/Piper, not for the mock voice).
 
 ```bash
 git clone https://github.com/tvaroska/podcaster.git
@@ -197,6 +198,23 @@ REST equivalents: `POST /v1/podcasts`, `PATCH /v1/podcasts/{id}`, `GET /v1/podca
 
 ---
 
+## Voices & audio pipeline
+
+The production worker image bundles **[Kokoro-82M v1.0](https://huggingface.co/hexgrad/Kokoro-82M)** (`kokoro-multi-lang-v1_0`) via [`sherpa-onnx`](https://github.com/k2-fsa/sherpa-onnx) (`TTS_ENGINE=kokoro`, `DEFAULT_VOICE=af_heart`). Before synthesis, the worker strips SSML and Markdown formatting (headings, bold/italic, code fences, links, raw URLs, bullet markers), splits the script along paragraph and sentence boundaries (`<= 500` runes per chunk), synthesizes each chunk at 24 kHz, and masters the concatenated audio with `ffmpeg` (`highpass=f=80`, `loudnorm=I=-16:TP=-1.5:LRA=11`, 128 kbps 24 kHz mono MP3).
+
+Built-in English `voice_id` values in `kokoro-multi-lang-v1_0`:
+
+| Accent / gender | `voice_id` options |
+| --- | --- |
+| US English — female | `af_heart` *(default)*, `af_alloy`, `af_aoede`, `af_bella`, `af_jessica`, `af_kore`, `af_nicole`, `af_nova`, `af_river`, `af_sarah`, `af_sky` |
+| US English — male | `am_adam`, `am_echo`, `am_eric`, `am_fenrir`, `am_liam`, `am_michael`, `am_onyx`, `am_puck`, `am_santa` |
+| UK English — female | `bf_alice`, `bf_emma`, `bf_isabella`, `bf_lily` |
+| UK English — male | `bm_daniel`, `bm_fable`, `bm_george`, `bm_lewis` |
+
+Set `VOICE_ALLOWLIST` on the control plane to restrict which `voice_id` values callers may request.
+
+---
+
 ## Configuration
 
 All settings are **process environment variables**. The binary does not load `.env`. `.env.example` is a checklist. To use a file locally:
@@ -234,7 +252,7 @@ Do not start from `deploy/cloudrun-*.yaml` — those files are comments plus pla
 
 1. Existing GCP project with **billing** and a principal that can grant IAM (typically Owner).
 2. `./deploy/bootstrap-gcp.sh` — APIs, Artifact Registry, Firestore + indexes, bucket, runtime SA, secrets, Cloud Build IAM.
-3. `gcloud builds submit` — server (distroless) and worker (Debian + Piper + ffmpeg).
+3. `gcloud builds submit` — server (distroless) and worker (Debian + Kokoro-82M / `sherpa-onnx` + ffmpeg).
 4. Deploy the **Job** first, then the **Service**.
 5. Pin `PUBLIC_BASE_URL` to the service URL you will actually subscribe with.
 6. Create a show, publish an episode, subscribe.

@@ -72,7 +72,7 @@ Per-user shows (`POST /v1/podcasts`) store **their own** publisher `submit_key` 
 
 ## Local
 
-Requirements: Go 1.26+, ffmpeg on `$PATH` (optional for the mock engine, required for Piper).
+Requirements: Go 1.26+, ffmpeg on `$PATH` (optional for the mock engine, required for Kokoro and Piper).
 
 ```bash
 make test
@@ -81,10 +81,10 @@ make run
 make smoke
 ```
 
-With a real voice:
+With a real voice locally:
 
-1. Install [Piper](https://github.com/rhasspy/piper/releases) and a voice, e.g. `en_US-lessac-medium`.
-2. Export `TTS_ENGINE=piper`, `PIPER_BIN`, `PIPER_MODEL`, `PIPER_CONFIG` (and the rest of the local defaults).
+1. Download [`sherpa-onnx`](https://github.com/k2-fsa/sherpa-onnx/releases) (`v1.12.14`+) and [`kokoro-multi-lang-v1_0.tar.bz2`](https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2) (see `Dockerfile` for exact URLs).
+2. Export `TTS_ENGINE=kokoro`, `KOKORO_BIN=/path/to/sherpa-onnx-offline-tts`, `KOKORO_MODEL_DIR=/path/to/kokoro-multi-lang-v1_0`, and `DEFAULT_VOICE=af_heart` (or use [Piper](https://github.com/rhasspy/piper/releases) with `TTS_ENGINE=piper`, `PIPER_BIN`, `PIPER_MODEL`, `PIPER_CONFIG`).
 3. `./bin/server`.
 
 Docker Compose (mock TTS):
@@ -100,7 +100,7 @@ Topology:
 | Piece | What |
 | --- | --- |
 | Cloud Run **Service** `podcaster` | `cmd/server` — REST, MCP, RSS, audio. Mock TTS is fine here; it only enqueues. |
-| Cloud Run **Job** `podcaster-worker` | `cmd/worker` + Piper + ffmpeg. One execution per episode (`EPISODE_ID` override). |
+| Cloud Run **Job** `podcaster-worker` | `cmd/worker` + Kokoro-82M (`sherpa-onnx`) + ffmpeg. One execution per episode (`EPISODE_ID` override). |
 | Firestore | Native mode. Collections `episodes` and `podcasts`. |
 | GCS | Private bucket `audio/<id>.mp3`. |
 | Secret Manager | `agent-api-key`, `feed-username`, `feed-password`, `feed-token` (default show only). |
@@ -237,7 +237,7 @@ A minimal Firestore document (`status` must be `PENDING` for CAS):
   "title": "Manual worker smoke",
   "script_text": "Good morning. This is a worker-only smoke test.",
   "category": "",
-  "voice_id": "en_US-lessac-medium",
+  "voice_id": "af_heart",
   "status": "PENDING",
   "podcast_id": "",
   "created_at": "TIMESTAMP"
@@ -265,7 +265,7 @@ gcloud run deploy podcaster \
   --allow-unauthenticated \
   --port=8080 --cpu=1 --memory=512Mi --timeout=3600 \
   --min-instances=0 --max-instances=4 \
-  --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=cloudrun,TTS_ENGINE=mock,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET,CLOUD_RUN_JOB_NAME=podcaster-worker,CLOUD_RUN_REGION=$REGION,VOICE_ALLOWLIST=af_heart,af_bella,am_adam,am_fenrir,am_michael,bf_emma,bm_george \
+  --set-env-vars="^;^STORE_BACKEND=firestore;STORAGE_BACKEND=gcs;JOB_BACKEND=cloudrun;TTS_ENGINE=mock;GCP_PROJECT=$PROJECT;GCS_BUCKET=$BUCKET;CLOUD_RUN_JOB_NAME=podcaster-worker;CLOUD_RUN_REGION=$REGION;VOICE_ALLOWLIST=af_heart,af_bella,am_adam,am_fenrir,am_michael,bf_emma,bm_george" \
   --set-secrets=AGENT_API_KEY=agent-api-key:latest,FEED_USERNAME=feed-username:latest,FEED_PASSWORD=feed-password:latest,FEED_TOKEN=feed-token:latest
 
 URL=$(gcloud run services describe podcaster --project=$PROJECT --region=$REGION --format='value(status.url)')
@@ -287,7 +287,7 @@ the org forbids `allUsers`. Redeploy with `--no-allow-unauthenticated --no-invok
 
 With invoker IAM left on, unauthenticated `GET /healthz` is often **Google-frontend HTML 404** (`/healthz` is reserved by the GFE). The app probe is `GET /readyz`. Cloud Run's own startup probe still talks to the container, not the GFE.
 
-`TTS_ENGINE=mock` on the **service** is correct (it does not synthesize). Piper lives only in the Job image.
+`TTS_ENGINE=mock` on the **service** is correct (it does not synthesize). Kokoro (`sherpa-onnx` + `kokoro-multi-lang-v1_0`) lives only in the Job image.
 
 Do **not** set env `CLOUD_RUN_JOB` on the service.
 
@@ -306,7 +306,7 @@ ID=$(curl -sS -X POST "$URL/v1/episodes" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["episode_id"])')
 echo episode=$ID
 
-# poll until READY (Piper + first-job cold start: often 2–3 minutes)
+# poll until READY (Kokoro + first-job cold start: often 2–3 minutes)
 for i in $(seq 1 40); do
   BODY=$(curl -sS "$URL/v1/episodes/$ID" -H "Authorization: Bearer $KEY")
   echo "$BODY"
@@ -346,7 +346,7 @@ https://FEED_USERNAME:FEED_PASSWORD@HOST/podcast.xml
 | Per-user feed 500 `FAILED_PRECONDITION` | `podcast_id` Firestore indexes not `READY`. |
 | RSS links 404 / wrong host | `PUBLIC_BASE_URL` is not the hostname in the subscribe URL. |
 | Audio 200 but slow / disconnects | Signed URL IAM failed; service is proxying. Grant `iam.serviceAccountTokenCreator` on the runtime SA. |
-| Worker exits on start: `PIPER_MODEL is required` | You overrode `TTS_ENGINE=piper` without the image env. Do not clear `PIPER_*`. |
+| Worker exits on start: `KOKORO_MODEL_DIR or KOKORO_MODEL is required` (or `PIPER_MODEL is required`) | You overrode `TTS_ENGINE` or cleared the image env (`--set-env-vars` replaces all env vars if it omits `KOKORO_*` unless they stay in the image `ENV`). Do not clear `KOKORO_*` / `PIPER_*`. |
 | Worker exits: `CLOUD_RUN_JOB_NAME is required` | `JOB_BACKEND=cloudrun` on the job. Set `local`. |
 
 ### Operational notes
@@ -356,7 +356,7 @@ https://FEED_USERNAME:FEED_PASSWORD@HOST/podcast.xml
 - **Feed tokens are embedded in every enclosure URL.** Sharing one episode link leaks that show's listener token. Treat subscribe URLs as secrets, and rotate a compromised listener `password`/`token` via `POST /v1/podcasts/{id}/rotate` (or MCP `rotate_podcast_credentials`).
 - **Listener passwords live in Firestore/SQLite** on the `podcasts` document (plaintext). Anyone with `roles/datastore.user` can read them. Default-show secrets are in Secret Manager.
 - **Do not reuse `dev-agent-key` / `podcast`/`podcast`.** The process will start with them on Firestore/GCS.
-- **`VOICE_ALLOWLIST` should be set in production.** Otherwise `voice_id` may be treated as a Piper model path (`*.onnx` / path separators).
+- **`VOICE_ALLOWLIST` should be set in production.** It restricts requested `voice_id` values to a known list of Kokoro speakers (and prevents arbitrary Piper `.onnx` model paths when `TTS_ENGINE=piper`).
 
 ## Observability
 
@@ -369,4 +369,4 @@ Probes:
 
 ## Cost notes
 
-Standby cost is dominated by the Cloud Run service min instances (keep at 0 unless you need sub-second ingest). Jobs are billed only while synthesizing. Firestore and GCS are pay-per-use. Piper avoids per-character TTS API fees.
+Standby cost is dominated by the Cloud Run service min instances (keep at 0 unless you need sub-second ingest). Jobs are billed only while synthesizing (~$0.0005 per minute of synthesized audio on 2 vCPU / 2 GiB, or $0 within the Cloud Run Jobs monthly free tier). Firestore and GCS are pay-per-use. Self-hosted Kokoro-82M avoids per-character/per-token TTS API fees.

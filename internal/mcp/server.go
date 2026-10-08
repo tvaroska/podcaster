@@ -29,11 +29,11 @@ func principalOrAdmin(ctx context.Context) auth.Principal {
 
 type publishInput struct {
 	Title       string            `json:"title" jsonschema:"Title of the podcast episode"`
-	Content     string            `json:"content" jsonschema:"Plain text script or summary to convert to audio"`
+	Content     string            `json:"content" jsonschema:"Plain text or Markdown script to convert to audio"`
 	Description string            `json:"description,omitempty" jsonschema:"Optional episode show notes or summary (distinct from the content script)"`
 	Category    string            `json:"category,omitempty" jsonschema:"Update category, e.g. Daily Briefing or Urgent Alert"`
-	VoiceID     string            `json:"voice_id,omitempty" jsonschema:"Optional Piper voice identifier such as en_US-lessac-medium"`
-	ImageURL    string            `json:"image_url,omitempty" jsonschema:"Optional per-episode artwork URL (http:// or https://)"`
+	VoiceID     string            `json:"voice_id,omitempty" jsonschema:"Optional voice identifier (e.g. af_heart, af_bella, am_adam, am_fenrir, am_michael, bf_emma, bm_george)"`
+	ImageURL    string            `json:"image_url,omitempty" jsonschema:"Optional per-episode artwork (http://, https://, or data:image/(png|jpeg);base64,...)"`
 	Chapters    []episode.Chapter `json:"chapters,omitempty" jsonschema:"Optional chapter markers"`
 	PodcastID   string            `json:"podcast_id,omitempty" jsonschema:"Optional show id created with create_podcast. Empty publishes to the default feed."`
 }
@@ -91,7 +91,7 @@ type createPodcastInput struct {
 	Title       string `json:"title" jsonschema:"Show title as it appears in podcast apps"`
 	Description string `json:"description,omitempty" jsonschema:"Optional RSS description"`
 	Author      string `json:"author,omitempty" jsonschema:"Optional itunes:author"`
-	ImageURL    string `json:"image_url,omitempty" jsonschema:"Optional custom podcast cover icon URL (http:// or https://)"`
+	ImageURL    string `json:"image_url,omitempty" jsonschema:"Optional custom podcast cover icon (http://, https://, or data:image/(png|jpeg);base64,...)"`
 	Password    string `json:"password,omitempty" jsonschema:"Optional custom listener Basic-auth password (generated if omitted)"`
 	Token       string `json:"token,omitempty" jsonschema:"Optional custom listener enclosure/feed token (defaults to password if password is set, or generated if omitted)"`
 }
@@ -133,7 +133,7 @@ type updatePodcastInput struct {
 	Title       *string `json:"title,omitempty" jsonschema:"Optional updated show title"`
 	Description *string `json:"description,omitempty" jsonschema:"Optional updated RSS description (empty string clears)"`
 	Author      *string `json:"author,omitempty" jsonschema:"Optional updated itunes:author (empty string clears)"`
-	ImageURL    *string `json:"image_url,omitempty" jsonschema:"Optional updated custom podcast cover icon URL (http:// or https://, or empty string to clear)"`
+	ImageURL    *string `json:"image_url,omitempty" jsonschema:"Optional updated custom podcast cover icon (http://, https://, data:image/(png|jpeg);base64,..., or empty string to clear)"`
 }
 
 type updateEpisodeInput struct {
@@ -142,7 +142,7 @@ type updateEpisodeInput struct {
 	Title       *string            `json:"title,omitempty" jsonschema:"Optional updated episode title"`
 	Description *string            `json:"description,omitempty" jsonschema:"Optional updated episode show notes or summary"`
 	Category    *string            `json:"category,omitempty" jsonschema:"Optional updated episode category"`
-	ImageURL    *string            `json:"image_url,omitempty" jsonschema:"Optional updated per-episode artwork URL (http:// or https://, or empty string to clear)"`
+	ImageURL    *string            `json:"image_url,omitempty" jsonschema:"Optional updated per-episode artwork (http://, https://, data:image/(png|jpeg);base64,..., or empty string to clear)"`
 	Chapters    *[]episode.Chapter `json:"chapters,omitempty" jsonschema:"Optional updated chapter markers (empty array clears)"`
 }
 

@@ -234,9 +234,9 @@ Content-Type: application/json
 | Field | Required | Notes |
 | --- | --- | --- |
 | `title` | yes | 1–200 characters (override with `MAX_TITLE_LENGTH`) |
-| `content` | yes | 10–100 000 characters (`MIN_CONTENT_LENGTH`, `MAX_CONTENT_LENGTH`), valid UTF-8. Spoken script; SSML tags are stripped before TTS. |
+| `content` | yes | 10–100 000 characters (`MIN_CONTENT_LENGTH`, `MAX_CONTENT_LENGTH`), valid UTF-8. Spoken script; SSML tags and Markdown formatting (headings, bold/italic, code fences, links, raw URLs, bullet markers) are cleaned and split into paragraph/sentence chunks before TTS. |
 | `description` | no | Optional episode show notes / summary (distinct from the `content` TTS script), up to `MAX_CONTENT_LENGTH` characters. |
-| `voice_id` | no | Defaults to `DEFAULT_VOICE`. Rejected if `VOICE_ALLOWLIST` is set and the id is not listed. |
+| `voice_id` | no | Defaults to `DEFAULT_VOICE` (`af_heart`). Built-in Kokoro v1.0 English voices include US female (`af_heart`, `af_alloy`, `af_aoede`, `af_bella`, `af_jessica`, `af_kore`, `af_nicole`, `af_nova`, `af_river`, `af_sarah`, `af_sky`), US male (`am_adam`, `am_echo`, `am_eric`, `am_fenrir`, `am_liam`, `am_michael`, `am_onyx`, `am_puck`, `am_santa`), UK female (`bf_alice`, `bf_emma`, `bf_isabella`, `bf_lily`), and UK male (`bm_daniel`, `bm_fable`, `bm_george`, `bm_lewis`). Rejected if `VOICE_ALLOWLIST` is set and the id is not listed. |
 | `category` | no | Shown in the RSS `<category>` and description prefix. |
 | `image_url` | no | Optional per-episode artwork (`http://` or `https://` URL, or inline `data:image/png;base64,...` / `data:image/jpeg;base64,...` up to 5 MiB), rendered as `<itunes:image>` on the RSS `<item>`. Inline data URIs are stored in object storage and rewritten to `/episodes/{id}/cover.png` (or `/p/{podcast_id}/episodes/{id}/cover.png`). |
 | `chapters` | no | Optional array of chapter markers (`[{"start_seconds": 0, "title": "Intro", "url": "https://...", "image_url": "https://..."}]`). Each chapter requires `start_seconds >= 0` and non-empty `title` (`<= MAX_TITLE_LENGTH`), with optional `http://` or `https://` `url` and `image_url`. |

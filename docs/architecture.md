@@ -125,7 +125,7 @@ Agent                 Server                 Store           Worker             
   |                     |-- RunJob(EPISODE_ID) ---------------->|                  |
   |<- 202 QUEUED -------|                      |                |                  |
   |                     |                      |<- CAS PROCESS--|                  |
-  |                     |                      |                |-- Piper+ffmpeg   |
+  |                     |                      |                |-- Kokoro+ffmpeg  |
   |                     |                      |                |-- Put MP3 ------>|
   |                     |                      |<- READY -------|                  |
   |-- GET /p/{id}/podcast.xml ---------------->|                |                  |
@@ -155,7 +155,7 @@ Agent                 Server                 Store           Worker             
 | TTS job | in-process worker pool | Cloud Run Job |
 | Metadata | SQLite file | Firestore |
 | Audio | `data/audio/` | private GCS bucket |
-| TTS engine | `TTS_ENGINE=mock` or Piper | Piper ONNX in the job image |
+| TTS engine | `TTS_ENGINE=mock`, `kokoro`, or `piper` | Kokoro-82M ONNX (`sherpa-onnx`) in the job image |
 | Default-show secrets | env / documented defaults | Secret Manager |
 | Per-user secrets | `podcasts` table | Firestore `podcasts` |
 
