@@ -9,12 +9,12 @@
 #   --task-timeout=30m \
 #   --cpu=2 \
 #   --memory=2Gi \
-#   --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=local,TTS_ENGINE=piper,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET \
+#   --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=local,TTS_ENGINE=kokoro,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET \
 #   --set-secrets=AGENT_API_KEY=agent-api-key:latest,FEED_USERNAME=feed-username:latest,FEED_PASSWORD=feed-password:latest
 #
 # JOB_BACKEND=local is required on the worker (it never enqueues).
 # The control plane injects EPISODE_ID per execution via RunJob overrides.
-# PIPER_* are already set in the worker image.
+# KOKORO_* are already set in the worker image.
 apiVersion: run.googleapis.com/v1
 kind: Job
 metadata:
@@ -38,7 +38,7 @@ spec:
                 - name: JOB_BACKEND
                   value: local
                 - name: TTS_ENGINE
-                  value: piper
+                  value: kokoro
               resources:
                 limits:
                   cpu: "2"

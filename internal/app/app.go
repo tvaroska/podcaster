@@ -570,6 +570,21 @@ func openEngine(cfg *config.Config) (tts.Engine, error) {
 	switch cfg.TTSEngine {
 	case config.EngineMock:
 		return &tts.MockEngine{}, nil
+	case config.EngineKokoro:
+		return &tts.KokoroEngine{
+			Bin:          cfg.KokoroBin,
+			ModelDir:     cfg.KokoroModelDir,
+			Model:        cfg.KokoroModel,
+			Voices:       cfg.KokoroVoices,
+			Tokens:       cfg.KokoroTokens,
+			DataDir:      cfg.KokoroDataDir,
+			DictDir:      cfg.KokoroDictDir,
+			Lexicon:      cfg.KokoroLexicon,
+			Speed:        cfg.KokoroSpeed,
+			Threads:      cfg.KokoroThreads,
+			FFmpegBin:    cfg.FFmpegBin,
+			DefaultVoice: cfg.DefaultVoice,
+		}, nil
 	case config.EnginePiper:
 		return &tts.PiperEngine{
 			Bin:          cfg.PiperBin,

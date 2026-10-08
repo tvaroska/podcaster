@@ -19,28 +19,27 @@ ENTRYPOINT ["/server"]
 
 FROM debian:bookworm-slim AS worker
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl ffmpeg tar \
+        bzip2 ca-certificates curl ffmpeg tar \
     && rm -rf /var/lib/apt/lists/*
 
-ARG PIPER_VERSION=2023.11.14-2
-ARG PIPER_VOICE=en_US-lessac-medium
-ARG PIPER_VOICE_URL=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx
-ARG PIPER_VOICE_CONFIG_URL=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
+ARG SHERPA_ONNX_VERSION=1.12.14
+ARG KOKORO_MODEL_ARCHIVE=kokoro-multi-lang-v1_0
+ARG SHERPA_ONNX_URL=https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_ONNX_VERSION}/sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-static.tar.bz2
+ARG KOKORO_MODEL_URL=https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/${KOKORO_MODEL_ARCHIVE}.tar.bz2
 
-RUN mkdir -p /opt/piper/voices \
-    && curl -fsSL -o /tmp/piper.tar.gz \
-        "https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}/piper_linux_x86_64.tar.gz" \
-    && tar -xzf /tmp/piper.tar.gz -C /opt/piper --strip-components=1 \
-    && curl -fsSL -o /opt/piper/voices/${PIPER_VOICE}.onnx "${PIPER_VOICE_URL}" \
-    && curl -fsSL -o /opt/piper/voices/${PIPER_VOICE}.onnx.json "${PIPER_VOICE_CONFIG_URL}" \
-    && rm -f /tmp/piper.tar.gz \
+RUN mkdir -p /opt/sherpa-onnx /opt/kokoro \
+    && curl -fsSL -o /tmp/sherpa-onnx.tar.bz2 "${SHERPA_ONNX_URL}" \
+    && tar -xjf /tmp/sherpa-onnx.tar.bz2 -C /opt/sherpa-onnx --strip-components=1 \
+    && curl -fsSL -o /tmp/kokoro.tar.bz2 "${KOKORO_MODEL_URL}" \
+    && tar -xjf /tmp/kokoro.tar.bz2 -C /opt/kokoro \
+    && rm -f /tmp/sherpa-onnx.tar.bz2 /tmp/kokoro.tar.bz2 \
     && useradd --system --uid 65532 --create-home nonroot
 
 COPY --from=build /out/worker /worker
 USER nonroot
-ENV PIPER_BIN=/opt/piper/piper \
-    PIPER_MODEL=/opt/piper/voices/en_US-lessac-medium.onnx \
-    PIPER_CONFIG=/opt/piper/voices/en_US-lessac-medium.onnx.json \
+ENV KOKORO_BIN=/opt/sherpa-onnx/bin/sherpa-onnx-offline-tts \
+    KOKORO_MODEL_DIR=/opt/kokoro/kokoro-multi-lang-v1_0 \
+    DEFAULT_VOICE=af_heart \
     FFMPEG_BIN=ffmpeg \
-    TTS_ENGINE=piper
+    TTS_ENGINE=kokoro
 ENTRYPOINT ["/worker"]

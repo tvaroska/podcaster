@@ -27,7 +27,7 @@ Key goals:
 ### 2.2 Processing and audio synthesis
 
 - Trigger an isolated batch process on successful ingest.
-- Convert scripts to `.mp3` with Piper ONNX (or the mock engine in local/dev).
+- Convert scripts to `.mp3` with Kokoro-82M ONNX via `sherpa-onnx` (or Piper / mock in local/dev).
 - Store generated audio at `audio/<episode_id>.mp3`.
 
 ### 2.3 Podcast distribution (client interface)

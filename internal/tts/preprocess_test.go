@@ -45,8 +45,9 @@ func TestPreprocessChunksLongText(t *testing.T) {
 
 func TestChunkSeparatorBoundary(t *testing.T) {
 	// Two sentences whose lengths sum to exactly maxRunes (so adding a space separator exceeds maxRunes).
-	s1 := strings.Repeat("a", 899) + "."
-	s2 := strings.Repeat("b", 899) + "."
+	half := maxChunkRunes/2 - 1
+	s1 := strings.Repeat("a", half) + "."
+	s2 := strings.Repeat("b", half) + "."
 	got := chunk(s1+" "+s2, maxChunkRunes)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 chunks, got %d", len(got))
@@ -55,5 +56,25 @@ func TestChunkSeparatorBoundary(t *testing.T) {
 		if n := utf8.RuneCountInString(c); n > maxChunkRunes {
 			t.Fatalf("chunk %d rune count %d exceeds %d", i, n, maxChunkRunes)
 		}
+	}
+}
+
+func TestPreprocessCleansMarkdownAndSplitsParagraphs(t *testing.T) {
+	input := "# Morning Briefing\n\n- **First** update with `inline_code` and a [report link](https://example.com/a).\n- Second bullet point https://example.com/raw\n\n---\n\nSecond paragraph after rule."
+	chunks := Preprocess(input)
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 paragraph chunks (heading, list, second paragraph), got %d: %#v", len(chunks), chunks)
+	}
+	if chunks[0] != "Morning Briefing." {
+		t.Fatalf("expected heading chunk with period, got %q", chunks[0])
+	}
+	if strings.ContainsAny(chunks[1], "*`#[]") || strings.Contains(chunks[1], "https://") {
+		t.Fatalf("markdown or URL leaked into chunk: %q", chunks[1])
+	}
+	if !strings.Contains(chunks[1], "First update with inline_code and a report link.") {
+		t.Fatalf("unexpected cleaned list chunk: %q", chunks[1])
+	}
+	if chunks[2] != "Second paragraph after rule." {
+		t.Fatalf("unexpected final paragraph chunk: %q", chunks[2])
 	}
 }

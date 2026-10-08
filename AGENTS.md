@@ -6,7 +6,7 @@ Instructions for AI coding agents working in this repository.
 
 Podcaster (`github.com/tvaroska/podcaster`) is a split-plane private podcast platform for AI agents (Go 1.26, `CGO_ENABLED=0`):
 - **Control plane (`cmd/server`)**: REST API (`/v1/*`), Streamable HTTP MCP server (`/mcp`), authenticated RSS 2.0 + iTunes + Podcasting 2.0 / Podlove chapters feeds (`/podcast.xml` and `/p/{id}/podcast.xml`), cover art, JSON chapters (`/episodes/{id}/chapters.json` and `/p/{id}/episodes/{ep}/chapters.json`), and audio delivery (`/audio/*` and `/p/{id}/audio/*`).
-- **Data plane (`cmd/worker`)**: Claims `PENDING` episodes via CAS, preprocesses text (strips SSML, chunks sentences), runs Piper ONNX TTS + `ffmpeg` (128 kbps mono MP3), uploads `audio/<episode_id>.mp3`, and marks episodes `READY` or `FAILED`.
+- **Data plane (`cmd/worker`)**: Claims `PENDING` episodes via CAS, preprocesses text (strips SSML/Markdown, splits paragraphs/sentences), runs Kokoro-82M ONNX TTS via `sherpa-onnx` (or Piper ONNX / mock TTS) + `ffmpeg` (128 kbps 24 kHz mono MP3 mastered to `-16 LUFS`), uploads `audio/<episode_id>.mp3`, and marks episodes `READY` or `FAILED`.
 
 ## Commands
 
@@ -29,7 +29,7 @@ Always run `go test ./...` and `go vet ./...` before finishing any code change. 
 - `internal/store`: Metadata persistence interface (`Store`) with two implementations: `SQLite` (`modernc.org/sqlite`) and `Firestore`.
 - `internal/storage`: Audio blob storage interface (`Storage` + optional `URLSigner`) with two implementations: `Local` and `GCS`.
 - `internal/job`: Async job dispatch (`Dispatcher`) with two implementations: `LocalDispatcher` (bounded channel + goroutines) and `CloudRunDispatcher` (`jobs.run` with `EPISODE_ID` override).
-- `internal/tts`: Audio synthesis (`Engine`) with `MockEngine` (embedded MP3 beep) and `PiperEngine` (Piper CLI + `ffmpeg` WAV concat & MP3 encode).
+- `internal/tts`: Audio synthesis (`Engine`) with `KokoroEngine` (`sherpa-onnx-offline-tts` + `Kokoro-82M`), `PiperEngine` (Piper CLI), and `MockEngine` (embedded MP3 beep), plus `ffmpeg` WAV concat & `-16 LUFS` 24 kHz MP3 mastering.
 - `internal/worker`: Episode claim (`CompareAndSwapStatus`), synthesis, duration probe, upload, and status transitions.
 
 ## Critical Invariants (Do Not Break)

@@ -16,9 +16,10 @@ const (
 	BackendLocal      = "local"
 	BackendGCS        = "gcs"
 	BackendCloudRun   = "cloudrun"
+	EngineKokoro      = "kokoro"
 	EnginePiper       = "piper"
 	EngineMock        = "mock"
-	DefaultVoice      = "en_US-lessac-medium"
+	DefaultVoice      = "af_heart"
 	DefaultListenAddr = ":8080"
 )
 
@@ -46,13 +47,23 @@ type Config struct {
 	WorkerTimeout   time.Duration
 	ShutdownTimeout time.Duration
 
-	TTSEngine    string
-	PiperBin     string
-	PiperModel   string
-	PiperConfig  string
-	FFmpegBin    string
-	DefaultVoice string
-	VoiceAllow   []string
+	TTSEngine      string
+	KokoroBin      string
+	KokoroModelDir string
+	KokoroModel    string
+	KokoroVoices   string
+	KokoroTokens   string
+	KokoroDataDir  string
+	KokoroDictDir  string
+	KokoroLexicon  string
+	KokoroSpeed    float64
+	KokoroThreads  int
+	PiperBin       string
+	PiperModel     string
+	PiperConfig    string
+	FFmpegBin      string
+	DefaultVoice   string
+	VoiceAllow     []string
 
 	PodcastTitle       string
 	PodcastDescription string
@@ -93,6 +104,16 @@ func FromEnv() (*Config, error) {
 		WorkerTimeout:      envDuration("WORKER_TIMEOUT", 30*time.Minute),
 		ShutdownTimeout:    envDuration("SHUTDOWN_TIMEOUT", 25*time.Second),
 		TTSEngine:          strings.ToLower(env("TTS_ENGINE", EngineMock)),
+		KokoroBin:          env("KOKORO_BIN", "sherpa-onnx-offline-tts"),
+		KokoroModelDir:     os.Getenv("KOKORO_MODEL_DIR"),
+		KokoroModel:        os.Getenv("KOKORO_MODEL"),
+		KokoroVoices:       os.Getenv("KOKORO_VOICES"),
+		KokoroTokens:       os.Getenv("KOKORO_TOKENS"),
+		KokoroDataDir:      os.Getenv("KOKORO_DATA_DIR"),
+		KokoroDictDir:      os.Getenv("KOKORO_DICT_DIR"),
+		KokoroLexicon:      os.Getenv("KOKORO_LEXICON"),
+		KokoroSpeed:        envFloat("KOKORO_SPEED", 1.0),
+		KokoroThreads:      envInt("KOKORO_THREADS", 2),
 		PiperBin:           env("PIPER_BIN", "piper"),
 		PiperModel:         os.Getenv("PIPER_MODEL"),
 		PiperConfig:        os.Getenv("PIPER_CONFIG"),
@@ -199,9 +220,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("unknown JOB_BACKEND %q (local|cloudrun)", c.JobBackend)
 	}
 	switch c.TTSEngine {
-	case EnginePiper, EngineMock:
+	case EngineKokoro, EnginePiper, EngineMock:
 	default:
-		return fmt.Errorf("unknown TTS_ENGINE %q (piper|mock)", c.TTSEngine)
+		return fmt.Errorf("unknown TTS_ENGINE %q (kokoro|piper|mock)", c.TTSEngine)
+	}
+	if c.TTSEngine == EngineKokoro && c.KokoroModelDir == "" && c.KokoroModel == "" {
+		return fmt.Errorf("KOKORO_MODEL_DIR or KOKORO_MODEL is required when TTS_ENGINE=kokoro")
 	}
 	if c.TTSEngine == EnginePiper && c.PiperModel == "" {
 		return fmt.Errorf("PIPER_MODEL is required when TTS_ENGINE=piper")
@@ -247,6 +271,18 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func envFloat(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
 }
 
 func envBool(key string, fallback bool) bool {

@@ -85,7 +85,12 @@ func (p *PiperEngine) Synthesize(ctx context.Context, text, voiceID string) (*Re
 }
 
 func (p *PiperEngine) runPiper(ctx context.Context, text, model, cfg, wav string) error {
-	args := []string{"--model", model, "--output_file", wav}
+	args := []string{
+		"--model", model,
+		"--sentence_silence", "0.35",
+		"--length_scale", "1.05",
+		"--output_file", wav,
+	}
 	if cfg != "" {
 		args = append(args, "--config", cfg)
 	}

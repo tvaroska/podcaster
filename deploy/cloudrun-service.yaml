@@ -9,7 +9,7 @@
 #   --port=8080 \
 #   --cpu=1 --memory=512Mi --timeout=3600 \
 #   --min-instances=0 --max-instances=4 \
-#   --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=cloudrun,TTS_ENGINE=mock,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET,CLOUD_RUN_JOB_NAME=podcaster-worker,CLOUD_RUN_REGION=$REGION,PUBLIC_BASE_URL=https://YOUR_URL,VOICE_ALLOWLIST=en_US-lessac-medium \
+#   --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=cloudrun,TTS_ENGINE=mock,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET,CLOUD_RUN_JOB_NAME=podcaster-worker,CLOUD_RUN_REGION=$REGION,PUBLIC_BASE_URL=https://YOUR_URL,VOICE_ALLOWLIST=af_heart,af_bella,am_adam,am_fenrir,am_michael,bf_emma,bm_george \
 #   --set-secrets=AGENT_API_KEY=agent-api-key:latest,FEED_USERNAME=feed-username:latest,FEED_PASSWORD=feed-password:latest,FEED_TOKEN=feed-token:latest
 #
 # If the org policy blocks allUsers, replace --allow-unauthenticated with

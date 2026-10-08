@@ -3,14 +3,14 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go)](go.mod)
 
-Private podcasts for agents. An agent publishes text over **REST** or **MCP**; a worker turns it into speech with [Piper](https://github.com/rhasspy/piper); each listener gets their own authenticated RSS feed in a normal podcast app.
+Private podcasts for agents. An agent publishes text over **REST** or **MCP**; a worker turns it into speech with [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (via [`sherpa-onnx`](https://github.com/k2-fsa/sherpa-onnx), or [Piper](https://github.com/rhasspy/piper)); each listener gets their own authenticated RSS feed in a normal podcast app.
 
 ```
   AI agent (REST / MCP)
            |
            v
   +--------------------+     RunJob      +------------------+
-  | Control plane      | ---------------> | Worker (Piper)   |
+  | Control plane      | ---------------> | Worker (Kokoro)  |
   | cmd/server         |                 | cmd/worker        |
   | REST, MCP, RSS     |                 +--------+---------+
   +--------+-----------+                          |
@@ -217,7 +217,8 @@ make build
 | `STORE_BACKEND` | `sqlite` | `firestore` in GCP |
 | `STORAGE_BACKEND` | `local` | `gcs` in GCP |
 | `JOB_BACKEND` | `local` | `cloudrun` on the **service** only |
-| `TTS_ENGINE` | `mock` | `piper` on the **worker** image |
+| `TTS_ENGINE` | `mock` | `kokoro` (or `piper`) on the **worker** image |
+| `DEFAULT_VOICE` | `af_heart` | Default narrator (`af_heart`, `af_bella`, `am_adam`, `am_fenrir`, `am_michael`, `bf_emma`, `bm_george`, …) |
 | `CLOUD_RUN_JOB_NAME` | — | Job name. Do not set `CLOUD_RUN_JOB` on a Cloud Run Service (reserved). |
 | `GCP_PROJECT` / `GCS_BUCKET` | — | Required for Firestore / GCS |
 

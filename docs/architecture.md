@@ -20,7 +20,7 @@ Podcaster turns text posted by an agent into private, password-protected podcast
   +---------------------------+     jobs.run      +------------------+
   | Control plane             | ----------------> | Worker           |
   | cmd/server                |   EPISODE_ID      | cmd/worker       |
-  | REST, MCP, RSS, audio     |                   | Piper + ffmpeg   |
+  | REST, MCP, RSS, audio     |                   | Kokoro + ffmpeg  |
   +-------------+-------------+                   +--------+---------+
                 |                                          |
                 v                                          | Put MP3
@@ -61,8 +61,8 @@ RSS is rendered on each request from `READY` episodes of **that show**. Default 
 ### Data plane (`cmd/worker`)
 
 1. CAS `PENDING` → `PROCESSING` so duplicate executions do not synthesize twice.
-2. Strip SSML, normalize whitespace, chunk long scripts.
-3. Piper (or mock) → WAV → 128 kbps mono MP3 via ffmpeg.
+2. Strip SSML and Markdown formatting, normalize whitespace, and split into paragraph- and sentence-aware chunks (<= 500 runes).
+3. Kokoro-82M via `sherpa-onnx` (or Piper / mock) → WAV → 128 kbps 24 kHz mono MP3 mastered to `-16 LUFS` via ffmpeg.
 4. Upload `audio/<episode_id>.mp3` (object key is episode id, not show id).
 5. `READY` with duration and byte size, or `FAILED` with `error_message`.
 

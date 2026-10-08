@@ -133,17 +133,23 @@ func escapeConcat(path string) string {
 	return strings.ReplaceAll(path, "'", `'\''`)
 }
 
-// EncodeMP3 converts a WAV (or any ffmpeg-readable) file to 128kbps mono MP3.
+// BroadcastAudioFilter normalizes speech to the -16 LUFS podcast standard with
+// a gentle 80 Hz high-pass and 2:1 dynamic compression.
+const BroadcastAudioFilter = "highpass=f=80,acompressor=threshold=-18dB:ratio=2:attack=20:release=250,loudnorm=I=-16:TP=-1.5:LRA=11"
+
+// EncodeMP3 converts a WAV (or any ffmpeg-readable) file to 128kbps mono 24kHz
+// MP3 with broadcast loudness mastering.
 func EncodeMP3(ctx context.Context, ffmpegBin, src, dest string) error {
 	if ffmpegBin == "" {
 		ffmpegBin = "ffmpeg"
 	}
 	cmd := exec.CommandContext(ctx, ffmpegBin,
 		"-y", "-i", src,
+		"-af", BroadcastAudioFilter,
 		"-codec:a", "libmp3lame",
 		"-b:a", "128k",
 		"-ac", "1",
-		"-ar", "22050",
+		"-ar", "24000",
 		dest,
 	)
 	var stderr bytes.Buffer

@@ -212,7 +212,7 @@ Content-Type: application/json
   "title": "Morning Briefing - Sept 26, 2026",
   "content": "Good morning. Here are your top updates for today...",
   "description": "Key links and summary for today's briefing.",
-  "voice_id": "en_US-lessac-medium",
+  "voice_id": "af_heart",
   "category": "Daily Briefing",
   "image_url": "https://example.com/episodes/sept-26.png",
   "chapters": [
@@ -317,7 +317,7 @@ List recent episodes (newest first). Query: `status`, `podcast_id`, `only_defaul
       "title": "Top Stories"
     }
   ],
-  "voice_id": "en_US-lessac-medium",
+  "voice_id": "af_heart",
   "duration_seconds": 42.1,
   "file_size_bytes": 675840,
   "error_message": "",
@@ -499,7 +499,7 @@ Accessible with the Super Key or that show's `submit_key`. Returns the updated s
 | `content` | yes | Plain-text script spoken by TTS |
 | `description` | no | Optional episode show notes / summary (distinct from the `content` script) |
 | `category` | no | e.g. `Daily Briefing` |
-| `voice_id` | no | Piper voice id |
+| `voice_id` | no | Kokoro voice id (e.g. `af_heart`, `af_bella`, `am_adam`, `am_fenrir`, `am_michael`, `bf_emma`, `bm_george`) |
 | `image_url` | no | Optional per-episode artwork (`http://`, `https://`, or `data:image/(png\|jpeg);base64,...`) |
 | `chapters` | no | Optional chapter markers (`[{"start_seconds": 0, "title": "Intro", "url": "https://...", "image_url": "https://..."}]`) |
 | `podcast_id` | no | Show slug. Empty publishes to the default feed (or defaults to the scoped show when authenticated with a per-user `submit_key`). |

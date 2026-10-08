@@ -36,13 +36,23 @@ set -a && source .env && set +a
 | `CLOUD_RUN_TASK_ATTEMPT` | `0` | Set automatically by Cloud Run Jobs; when `> 0`, allows the worker to reclaim a stranded `PROCESSING` episode on retry |
 | `WORKER_TIMEOUT` | `30m` | Per-episode synthesis deadline |
 | `SHUTDOWN_TIMEOUT` | `25s` | HTTP graceful shutdown |
-| `TTS_ENGINE` | `mock` | `mock` (embedded beep) or `piper` |
-| `PIPER_BIN` | `piper` | Piper executable (worker image sets `/opt/piper/piper`) |
-| `PIPER_MODEL` | — | Path to `.onnx` (required for `piper`; baked into the worker image) |
+| `TTS_ENGINE` | `mock` | `mock` (embedded beep), `kokoro` (Kokoro-82M via `sherpa-onnx`), or `piper` |
+| `KOKORO_BIN` | `sherpa-onnx-offline-tts` | `sherpa-onnx` executable (worker image sets `/opt/sherpa-onnx/bin/sherpa-onnx-offline-tts`) |
+| `KOKORO_MODEL_DIR` | — | Path to extracted `kokoro-multi-lang-v1_0` directory (baked into the worker image) |
+| `KOKORO_MODEL` | — | Optional explicit path to `model.onnx` (defaults to `${KOKORO_MODEL_DIR}/model.onnx`) |
+| `KOKORO_VOICES` | — | Optional explicit path to `voices.bin` |
+| `KOKORO_TOKENS` | — | Optional explicit path to `tokens.txt` |
+| `KOKORO_DATA_DIR` | — | Optional explicit path to `espeak-ng-data` |
+| `KOKORO_DICT_DIR` | — | Optional explicit path to `dict` directory (defaults to `${KOKORO_MODEL_DIR}/dict` when present) |
+| `KOKORO_LEXICON` | — | Optional explicit path to lexicon file(s) |
+| `KOKORO_SPEED` | `1.0` | Speech speed multiplier |
+| `KOKORO_THREADS` | `2` | CPU threads for ONNX inference |
+| `PIPER_BIN` | `piper` | Optional Piper executable when `TTS_ENGINE=piper` |
+| `PIPER_MODEL` | — | Path to `.onnx` (required when `TTS_ENGINE=piper`) |
 | `PIPER_CONFIG` | — | Optional `.onnx.json` |
 | `FFMPEG_BIN` | `ffmpeg` | ffmpeg for MP3 encode + duration probe |
-| `DEFAULT_VOICE` | `en_US-lessac-medium` | Stored when the request omits `voice_id` |
-| `VOICE_ALLOWLIST` | empty | Comma-separated allowed `voice_id`s. Set this in production. |
+| `DEFAULT_VOICE` | `af_heart` | Stored when the request omits `voice_id` |
+| `VOICE_ALLOWLIST` | empty | Comma-separated allowed `voice_id`s (e.g. `af_heart,af_bella,am_adam,am_fenrir,am_michael,bf_emma,bm_george`). Set this in production. |
 | `PODCAST_TITLE` | `Private Agent Briefing` | Default-show RSS title |
 | `PODCAST_DESCRIPTION` | *(short default)* | Default-show RSS description |
 | `PODCAST_AUTHOR` | `Podcaster` | `itunes:author` |
@@ -195,8 +205,8 @@ gcloud builds submit \
 
 Produces:
 
-- `$IMAGE_BASE/server:latest` — distroless, no Piper
-- `$IMAGE_BASE/worker:latest` — Debian + ffmpeg + Piper + `en_US-lessac-medium` (downloaded at **build** time, no checksum). The image already sets `PIPER_BIN` / `PIPER_MODEL` / `PIPER_CONFIG`.
+- `$IMAGE_BASE/server:latest` — distroless, no TTS runtime
+- `$IMAGE_BASE/worker:latest` — Debian + ffmpeg + `sherpa-onnx` + `kokoro-multi-lang-v1_0` (`af_heart` default voice, downloaded at **build** time). The image already sets `KOKORO_BIN`, `KOKORO_MODEL_DIR`, `DEFAULT_VOICE=af_heart`, and `TTS_ENGINE=kokoro`.
 
 If submit 403s on `gs://${PROJECT}_cloudbuild`, re-run bootstrap or grant the compute SA `roles/storage.objectAdmin` on that bucket. If the image name ends with `server:` (empty tag), you passed an empty substitution — use `_TAG=latest`.
 
@@ -211,7 +221,7 @@ gcloud run jobs deploy podcaster-worker \
   --service-account=$SA \
   --tasks=1 --max-retries=1 --task-timeout=30m \
   --cpu=2 --memory=2Gi \
-  --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=local,TTS_ENGINE=piper,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET \
+  --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=local,TTS_ENGINE=kokoro,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET \
   --set-secrets=AGENT_API_KEY=agent-api-key:latest,FEED_USERNAME=feed-username:latest,FEED_PASSWORD=feed-password:latest
 ```
 
@@ -255,7 +265,7 @@ gcloud run deploy podcaster \
   --allow-unauthenticated \
   --port=8080 --cpu=1 --memory=512Mi --timeout=3600 \
   --min-instances=0 --max-instances=4 \
-  --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=cloudrun,TTS_ENGINE=mock,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET,CLOUD_RUN_JOB_NAME=podcaster-worker,CLOUD_RUN_REGION=$REGION,VOICE_ALLOWLIST=en_US-lessac-medium \
+  --set-env-vars=STORE_BACKEND=firestore,STORAGE_BACKEND=gcs,JOB_BACKEND=cloudrun,TTS_ENGINE=mock,GCP_PROJECT=$PROJECT,GCS_BUCKET=$BUCKET,CLOUD_RUN_JOB_NAME=podcaster-worker,CLOUD_RUN_REGION=$REGION,VOICE_ALLOWLIST=af_heart,af_bella,am_adam,am_fenrir,am_michael,bf_emma,bm_george \
   --set-secrets=AGENT_API_KEY=agent-api-key:latest,FEED_USERNAME=feed-username:latest,FEED_PASSWORD=feed-password:latest,FEED_TOKEN=feed-token:latest
 
 URL=$(gcloud run services describe podcaster --project=$PROJECT --region=$REGION --format='value(status.url)')

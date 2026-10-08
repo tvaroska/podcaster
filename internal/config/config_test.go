@@ -71,6 +71,17 @@ func TestValidateProduction(t *testing.T) {
 	if err := c.Validate(); err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
+
+	c.TTSEngine = EngineKokoro
+	c.KokoroModelDir = ""
+	c.KokoroModel = ""
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error for missing Kokoro model dir/path")
+	}
+	c.KokoroModelDir = "/opt/kokoro/kokoro-multi-lang-v1_0"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected kokoro validate error: %v", err)
+	}
 }
 
 func TestCloudRunJobNameEnv(t *testing.T) {
