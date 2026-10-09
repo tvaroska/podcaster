@@ -90,3 +90,40 @@ func TestPreprocessCleansMarkdownAndSplitsParagraphs(t *testing.T) {
 		t.Fatalf("unexpected split paragraph chunks: %#v", splitChunks)
 	}
 }
+
+func TestPreprocessInitialismsPhoneticsAndStructuralHeaders(t *testing.T) {
+	input := "Part 1 NASA In March 2026, ESA and CNSA reviewed the ILRS architecture with SLS and Lavochkin for Chang'e-6 at Baikonur."
+	chunks := Preprocess(input)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d: %#v", len(chunks), chunks)
+	}
+	got := chunks[0]
+	for _, want := range []string{
+		"Part 1: NASA. ... In March 2026,",
+		"E S A",
+		"C N S A",
+		"I L R S",
+		"S L S",
+		"Lah-votch-keen",
+		"Chahng-uh 6",
+		"Bye-kuh-noor",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in preprocessed text, got:\n%s", want, got)
+		}
+	}
+}
+
+func TestSplitSentencesPreservesAbbreviationsAndInitials(t *testing.T) {
+	text := "Dr. J. W. Smith met U.S. officials on Jan. 15 vs. Feb. 20 to review Fig. 3. Then the launch proceeded."
+	got := splitSentences(text)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 sentences (without splitting on Dr., J., W., U.S., Jan., vs., Feb., Fig.), got %d: %#v", len(got), got)
+	}
+	if got[0] != "Dr. J. W. Smith met U.S. officials on Jan. 15 vs. Feb. 20 to review Fig. 3." {
+		t.Fatalf("unexpected first sentence: %q", got[0])
+	}
+	if got[1] != "Then the launch proceeded." {
+		t.Fatalf("unexpected second sentence: %q", got[1])
+	}
+}

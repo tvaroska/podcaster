@@ -45,7 +45,7 @@ set -a && source .env && set +a
 | `KOKORO_DATA_DIR` | — | Optional explicit path to `espeak-ng-data` |
 | `KOKORO_DICT_DIR` | — | Optional explicit path to `dict` directory (defaults to `${KOKORO_MODEL_DIR}/dict` when present) |
 | `KOKORO_LEXICON` | — | Optional explicit path to lexicon file(s) |
-| `KOKORO_SPEED` | `1.0` | Speech speed multiplier |
+| `KOKORO_SPEED` | `0.95` | Speech speed multiplier (`0.93`–`0.97` recommended for technical briefings) |
 | `KOKORO_THREADS` | `2` | CPU threads per ONNX inference process |
 | `KOKORO_CONCURRENCY` | `1` | Parallel Kokoro chunk synthesis processes (`<= 1` runs sequentially). Size so `KOKORO_CONCURRENCY × KOKORO_THREADS ≤ vCPU` (and budget ~500–600 MiB RAM per concurrent process). |
 | `PIPER_BIN` | `piper` | Optional Piper executable when `TTS_ENGINE=piper` |

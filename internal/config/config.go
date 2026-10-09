@@ -19,8 +19,9 @@ const (
 	EngineKokoro      = "kokoro"
 	EnginePiper       = "piper"
 	EngineMock        = "mock"
-	DefaultVoice      = "af_heart"
-	DefaultListenAddr = ":8080"
+	DefaultVoice       = "af_heart"
+	DefaultKokoroSpeed = 0.95
+	DefaultListenAddr  = ":8080"
 )
 
 // Config is assembled entirely from environment variables.
@@ -113,7 +114,7 @@ func FromEnv() (*Config, error) {
 		KokoroDataDir:      os.Getenv("KOKORO_DATA_DIR"),
 		KokoroDictDir:      os.Getenv("KOKORO_DICT_DIR"),
 		KokoroLexicon:      os.Getenv("KOKORO_LEXICON"),
-		KokoroSpeed:        envFloat("KOKORO_SPEED", 1.0),
+		KokoroSpeed:        envFloat("KOKORO_SPEED", DefaultKokoroSpeed),
 		KokoroThreads:      envInt("KOKORO_THREADS", 2),
 		KokoroConcurrency:  envInt("KOKORO_CONCURRENCY", 1),
 		PiperBin:           env("PIPER_BIN", "piper"),

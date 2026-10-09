@@ -133,9 +133,10 @@ func escapeConcat(path string) string {
 	return strings.ReplaceAll(path, "'", `'\''`)
 }
 
-// BroadcastAudioFilter normalizes speech to the -16 LUFS podcast standard with
-// a gentle 80 Hz high-pass and 2:1 dynamic compression.
-const BroadcastAudioFilter = "highpass=f=80,acompressor=threshold=-18dB:ratio=2:attack=20:release=250,loudnorm=I=-16:TP=-1.5:LRA=11"
+// BroadcastAudioFilter normalizes mono speech to the -19 LUFS podcast standard
+// with a -1.0 dBTP ceiling, an 80 Hz high-pass filter, 6-8 kHz sibilance attenuation
+// (de-essing EQ), and 2:1 downward compression (30 ms attack, 100 ms release).
+const BroadcastAudioFilter = "highpass=f=80,equalizer=f=7000:t=h:w=2000:g=-3.5,acompressor=threshold=-18dB:ratio=2:attack=30:release=100,loudnorm=I=-19:TP=-1.0:LRA=11"
 
 // EncodeMP3 converts a WAV (or any ffmpeg-readable) file to 128kbps mono 24kHz
 // MP3 with broadcast loudness mastering.

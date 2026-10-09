@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -113,19 +114,11 @@ func ValidateCreate(in CreateInput, limits Limits, voiceAllow []string) error {
 		return &ValidationError{Field: "voice_id", Message: fmt.Sprintf("voice_id must be at most %d characters", limits.MaxTitleLength)}
 	}
 	if in.VoiceID != "" {
-		if len(voiceAllow) > 0 {
-			ok := false
-			for _, v := range voiceAllow {
-				if v == in.VoiceID {
-					ok = true
-					break
-				}
-			}
-			if !ok {
-				return &ValidationError{Field: "voice_id", Message: "voice_id is not in the configured allow-list"}
-			}
-		} else if strings.Contains(in.VoiceID, "..") || strings.ContainsAny(in.VoiceID, `/\`) {
+		if strings.Contains(in.VoiceID, "..") || strings.ContainsAny(in.VoiceID, `/\`) {
 			return &ValidationError{Field: "voice_id", Message: "voice_id must not contain path separators or traversal"}
+		}
+		if len(voiceAllow) > 0 && !isVoiceAllowed(in.VoiceID, voiceAllow) {
+			return &ValidationError{Field: "voice_id", Message: "voice_id is not in the configured allow-list"}
 		}
 	}
 
@@ -251,4 +244,57 @@ func validateChapters(chapters []Chapter, limits Limits) error {
 		}
 	}
 	return nil
+}
+
+// isVoiceAllowed checks whether voiceID matches an entry in voiceAllow directly,
+// or is a valid blend expression (e.g. "af_heart:0.7,af_bella:0.3" or "0.7*af_heart+0.3*af_bella")
+// whose constituent voices are all present in voiceAllow.
+func isVoiceAllowed(voiceID string, voiceAllow []string) bool {
+	allowed := make(map[string]bool, len(voiceAllow))
+	for _, v := range voiceAllow {
+		allowed[strings.TrimSpace(v)] = true
+	}
+	if allowed[voiceID] {
+		return true
+	}
+	if !strings.ContainsAny(voiceID, "+,:*") {
+		return false
+	}
+	normalized := strings.ReplaceAll(voiceID, "+", ",")
+	parts := strings.Split(normalized, ",")
+	count := 0
+	for _, rawPart := range parts {
+		part := strings.TrimSpace(rawPart)
+		if part == "" {
+			return false
+		}
+		var name string
+		switch {
+		case strings.Contains(part, ":"):
+			kv := strings.SplitN(part, ":", 2)
+			name = strings.TrimSpace(kv[0])
+			w, err := strconv.ParseFloat(strings.TrimSpace(kv[1]), 64)
+			if err != nil || w <= 0 || math.IsNaN(w) || math.IsInf(w, 0) {
+				return false
+			}
+		case strings.Contains(part, "*"):
+			kv := strings.SplitN(part, "*", 2)
+			left := strings.TrimSpace(kv[0])
+			right := strings.TrimSpace(kv[1])
+			if w, err := strconv.ParseFloat(left, 64); err == nil && w > 0 && !math.IsNaN(w) && !math.IsInf(w, 0) {
+				name = right
+			} else if w, err := strconv.ParseFloat(right, 64); err == nil && w > 0 && !math.IsNaN(w) && !math.IsInf(w, 0) {
+				name = left
+			} else {
+				return false
+			}
+		default:
+			name = part
+		}
+		if !allowed[name] {
+			return false
+		}
+		count++
+	}
+	return count > 0
 }

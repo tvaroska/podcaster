@@ -2,7 +2,9 @@ package tts
 
 import (
 	"context"
+	"encoding/binary"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -426,4 +428,66 @@ esac
 			t.Fatalf("expected temp directory to be removed on error, found: %v", leftover)
 		}
 	})
+}
+
+func TestKokoroVoiceBlending(t *testing.T) {
+	dir := t.TempDir()
+	// Create a synthetic voices.bin with 28 speakers, 4 float32s per speaker.
+	const numSpeakers = 28
+	const floatsPerSpeaker = 4
+	raw := make([]byte, numSpeakers*floatsPerSpeaker*4)
+	for s := 0; s < numSpeakers; s++ {
+		for j := 0; j < floatsPerSpeaker; j++ {
+			val := float32(s*10 + j)
+			off := (s*floatsPerSpeaker + j) * 4
+			binary.LittleEndian.PutUint32(raw[off:off+4], math.Float32bits(val))
+		}
+	}
+	voicesPath := filepath.Join(dir, "voices.bin")
+	if err := os.WriteFile(voicesPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	eng := &KokoroEngine{DefaultVoice: DefaultKokoroVoice}
+
+	// Default "af_heart" should resolve to 0.7 * af_heart (sid=3) + 0.3 * af_bella (sid=2).
+	weights, err := eng.ResolveVoiceWeights("af_heart")
+	if err != nil {
+		t.Fatalf("ResolveVoiceWeights(af_heart) error: %v", err)
+	}
+	if len(weights) != 2 || weights[0].SID != 3 || math.Abs(weights[0].Weight-0.7) > 1e-6 || weights[1].SID != 2 || math.Abs(weights[1].Weight-0.3) > 1e-6 {
+		t.Fatalf("unexpected default af_heart blend weights: %+v", weights)
+	}
+
+	blendedPath, sid, cleanup, err := prepareBlendedVoices(voicesPath, dir, weights)
+	if err != nil {
+		t.Fatalf("prepareBlendedVoices error: %v", err)
+	}
+	defer cleanup()
+	if sid != 3 || blendedPath == voicesPath {
+		t.Fatalf("expected blended voices file at sid 3, got path=%q sid=%d", blendedPath, sid)
+	}
+
+	blendedBytes, err := os.ReadFile(blendedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for j := 0; j < floatsPerSpeaker; j++ {
+		off := (3*floatsPerSpeaker + j) * 4
+		got := math.Float32frombits(binary.LittleEndian.Uint32(blendedBytes[off : off+4]))
+		want := float32(0.7*float64(30+j) + 0.3*float64(20+j))
+		if math.Abs(float64(got-want)) > 1e-4 {
+			t.Fatalf("blended float[%d] = %v, want %v", j, got, want)
+		}
+	}
+
+	// Verify expression syntax "0.7*af_heart+0.3*af_bella" and "am_adam:0.6,am_michael:0.4".
+	exprWeights, err := eng.ResolveVoiceWeights("0.7 * af_heart + 0.3 * af_bella")
+	if err != nil || len(exprWeights) != 2 || exprWeights[0].SID != 3 || exprWeights[1].SID != 2 {
+		t.Fatalf("ResolveVoiceWeights expression failed: %+v (%v)", exprWeights, err)
+	}
+	colonWeights, err := eng.ResolveVoiceWeights("am_adam:0.6,am_michael:0.4")
+	if err != nil || len(colonWeights) != 2 || colonWeights[0].SID != 11 || colonWeights[1].SID != 16 {
+		t.Fatalf("ResolveVoiceWeights colon syntax failed: %+v (%v)", colonWeights, err)
+	}
 }
