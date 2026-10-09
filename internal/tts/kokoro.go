@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // DefaultKokoroVoice is the flagship warm American English narrator in Kokoro-82M v1.0.
@@ -60,6 +62,7 @@ type KokoroEngine struct {
 	Lexicon      string
 	Speed        float64
 	Threads      int
+	Concurrency  int
 	FFmpegBin    string
 	DefaultVoice string
 }
@@ -154,25 +157,85 @@ func (k *KokoroEngine) Synthesize(ctx context.Context, text, voiceID string) (*R
 	if err != nil {
 		return nil, err
 	}
-	wavs := make([]string, 0, len(chunks))
-	for i, chunk := range chunks {
-		wav := filepath.Join(tmp, fmt.Sprintf("part-%04d.wav", i))
-		if err := k.runKokoro(ctx, bin, model, voices, tokens, dataDir, dictDir, lexicon, sid, chunk, wav); err != nil {
+	wavs := make([]string, len(chunks))
+	for i := range chunks {
+		wavs[i] = filepath.Join(tmp, fmt.Sprintf("part-%04d.wav", i))
+	}
+
+	concurrency := k.Concurrency
+	if concurrency <= 1 || len(chunks) == 1 {
+		for i, chunk := range chunks {
+			if err := k.runKokoro(ctx, bin, model, voices, tokens, dataDir, dictDir, lexicon, sid, chunk, wavs[i]); err != nil {
+				_ = os.RemoveAll(tmp)
+				return nil, err
+			}
+		}
+	} else {
+		if concurrency > len(chunks) {
+			concurrency = len(chunks)
+		}
+		runCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		sem := make(chan struct{}, concurrency)
+		var (
+			wg       sync.WaitGroup
+			errOnce  sync.Once
+			firstErr error
+		)
+	loop:
+		for i, chunk := range chunks {
+			select {
+			case <-runCtx.Done():
+				errOnce.Do(func() {
+					firstErr = runCtx.Err()
+				})
+				break loop
+			case sem <- struct{}{}:
+			}
+			if runCtx.Err() != nil {
+				errOnce.Do(func() {
+					firstErr = runCtx.Err()
+				})
+				<-sem
+				break
+			}
+			wg.Add(1)
+			go func(text, wav string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				if err := k.runKokoro(runCtx, bin, model, voices, tokens, dataDir, dictDir, lexicon, sid, text, wav); err != nil {
+					errOnce.Do(func() {
+						firstErr = err
+						cancel()
+					})
+				}
+			}(chunk, wavs[i])
+		}
+		wg.Wait()
+		if firstErr != nil {
+			_ = os.RemoveAll(tmp)
+			return nil, firstErr
+		}
+	}
+	srcWAV := wavs[0]
+	if len(wavs) > 1 {
+		combined := filepath.Join(tmp, "combined.wav")
+		if err := ConcatWAV(ctx, k.FFmpegBin, wavs, combined); err != nil {
 			_ = os.RemoveAll(tmp)
 			return nil, err
 		}
-		wavs = append(wavs, wav)
-	}
-	combined := filepath.Join(tmp, "combined.wav")
-	if err := ConcatWAV(ctx, k.FFmpegBin, wavs, combined); err != nil {
-		_ = os.RemoveAll(tmp)
-		return nil, err
+		for _, w := range wavs {
+			_ = os.Remove(w)
+		}
+		srcWAV = combined
 	}
 	mp3 := filepath.Join(tmp, "episode.mp3")
-	if err := EncodeMP3(ctx, k.FFmpegBin, combined, mp3); err != nil {
+	if err := EncodeMP3(ctx, k.FFmpegBin, srcWAV, mp3); err != nil {
 		_ = os.RemoveAll(tmp)
 		return nil, err
 	}
+	_ = os.Remove(srcWAV)
 	f, err := os.Open(mp3)
 	if err != nil {
 		_ = os.RemoveAll(tmp)
@@ -210,6 +273,7 @@ func (k *KokoroEngine) runKokoro(ctx context.Context, bin, model, voices, tokens
 		args = append(args, "--kokoro-lexicon="+lexicon)
 	}
 	args = append(args,
+		"--tts-max-num-sentences=1",
 		fmt.Sprintf("--num-threads=%d", threads),
 		fmt.Sprintf("--sid=%d", sid),
 		fmt.Sprintf("--kokoro-length-scale=%.2f", lengthScale),
@@ -217,6 +281,7 @@ func (k *KokoroEngine) runKokoro(ctx context.Context, bin, model, voices, tokens
 		text,
 	)
 	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.WaitDelay = 200 * time.Millisecond
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

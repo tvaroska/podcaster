@@ -30,9 +30,27 @@ ARG KOKORO_MODEL_URL=https://github.com/k2-fsa/sherpa-onnx/releases/download/tts
 RUN mkdir -p /opt/sherpa-onnx /opt/kokoro \
     && curl -fsSL -o /tmp/sherpa-onnx.tar.bz2 "${SHERPA_ONNX_URL}" \
     && tar -xjf /tmp/sherpa-onnx.tar.bz2 -C /opt/sherpa-onnx --strip-components=1 \
+        "sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-static/bin/sherpa-onnx-offline-tts" \
     && curl -fsSL -o /tmp/kokoro.tar.bz2 "${KOKORO_MODEL_URL}" \
     && tar -xjf /tmp/kokoro.tar.bz2 -C /opt/kokoro \
+    && printf '你好 n i3 h ao3\n' > "/opt/kokoro/${KOKORO_MODEL_ARCHIVE}/lexicon-zh.txt" \
     && rm -f /tmp/sherpa-onnx.tar.bz2 /tmp/kokoro.tar.bz2 \
+        "/opt/kokoro/${KOKORO_MODEL_ARCHIVE}"/*.wav \
+        "/opt/kokoro/${KOKORO_MODEL_ARCHIVE}"/*.py \
+    && /opt/sherpa-onnx/bin/sherpa-onnx-offline-tts \
+        --kokoro-model="/opt/kokoro/${KOKORO_MODEL_ARCHIVE}/model.onnx" \
+        --kokoro-voices="/opt/kokoro/${KOKORO_MODEL_ARCHIVE}/voices.bin" \
+        --kokoro-tokens="/opt/kokoro/${KOKORO_MODEL_ARCHIVE}/tokens.txt" \
+        --kokoro-data-dir="/opt/kokoro/${KOKORO_MODEL_ARCHIVE}/espeak-ng-data" \
+        --kokoro-dict-dir="/opt/kokoro/${KOKORO_MODEL_ARCHIVE}/dict" \
+        --kokoro-lexicon="/opt/kokoro/${KOKORO_MODEL_ARCHIVE}/lexicon-us-en.txt,/opt/kokoro/${KOKORO_MODEL_ARCHIVE}/lexicon-zh.txt" \
+        --tts-max-num-sentences=1 \
+        --num-threads=2 \
+        --sid=3 \
+        --output-filename=/tmp/smoke.wav \
+        "Build check." \
+    && test -s /tmp/smoke.wav \
+    && rm -f /tmp/smoke.wav \
     && useradd --system --uid 65532 --create-home nonroot
 
 COPY --from=build /out/worker /worker

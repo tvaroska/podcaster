@@ -55,10 +55,11 @@ type Config struct {
 	KokoroTokens   string
 	KokoroDataDir  string
 	KokoroDictDir  string
-	KokoroLexicon  string
-	KokoroSpeed    float64
-	KokoroThreads  int
-	PiperBin       string
+	KokoroLexicon     string
+	KokoroSpeed       float64
+	KokoroThreads     int
+	KokoroConcurrency int
+	PiperBin          string
 	PiperModel     string
 	PiperConfig    string
 	FFmpegBin      string
@@ -114,6 +115,7 @@ func FromEnv() (*Config, error) {
 		KokoroLexicon:      os.Getenv("KOKORO_LEXICON"),
 		KokoroSpeed:        envFloat("KOKORO_SPEED", 1.0),
 		KokoroThreads:      envInt("KOKORO_THREADS", 2),
+		KokoroConcurrency:  envInt("KOKORO_CONCURRENCY", 1),
 		PiperBin:           env("PIPER_BIN", "piper"),
 		PiperModel:         os.Getenv("PIPER_MODEL"),
 		PiperConfig:        os.Getenv("PIPER_CONFIG"),

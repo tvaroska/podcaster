@@ -236,6 +236,8 @@ make build
 | `STORAGE_BACKEND` | `local` | `gcs` in GCP |
 | `JOB_BACKEND` | `local` | `cloudrun` on the **service** only |
 | `TTS_ENGINE` | `mock` | `kokoro` (or `piper`) on the **worker** image |
+| `KOKORO_THREADS` | `2` | CPU threads per `sherpa-onnx-offline-tts` process |
+| `KOKORO_CONCURRENCY` | `1` | Parallel Kokoro chunk processes (`<= 1` runs sequentially). Size so `KOKORO_CONCURRENCY × KOKORO_THREADS ≤ vCPU`. |
 | `DEFAULT_VOICE` | `af_heart` | Default narrator (`af_heart`, `af_bella`, `am_adam`, `am_fenrir`, `am_michael`, `bf_emma`, `bm_george`, …) |
 | `CLOUD_RUN_JOB_NAME` | — | Job name. Do not set `CLOUD_RUN_JOB` on a Cloud Run Service (reserved). |
 | `GCP_PROJECT` / `GCS_BUCKET` | — | Required for Firestore / GCS |

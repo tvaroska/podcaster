@@ -75,16 +75,59 @@ func cleanMarkdown(text string) string {
 
 func chunkParagraphs(text string, maxRunes int) []string {
 	paragraphs := strings.Split(text, "\n\n")
-	var out []string
+	var raw []string
 	for _, p := range paragraphs {
 		p = strings.TrimSpace(strings.ReplaceAll(p, "\n", " "))
 		p = multiSpace.ReplaceAllString(p, " ")
 		if p == "" {
 			continue
 		}
-		out = append(out, chunk(p, maxRunes)...)
+		raw = append(raw, chunk(p, maxRunes)...)
+	}
+	return coalesceChunks(raw, maxRunes)
+}
+
+func coalesceChunks(chunks []string, maxRunes int) []string {
+	if len(chunks) <= 1 {
+		return chunks
+	}
+	var out []string
+	var cur string
+	for _, c := range chunks {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		n := utf8.RuneCountInString(c)
+		if cur == "" {
+			cur = c
+			continue
+		}
+		withPeriod := ensureSentenceEnd(cur)
+		withPeriodRunes := utf8.RuneCountInString(withPeriod)
+		if withPeriodRunes+1+n <= maxRunes {
+			cur = withPeriod + " " + c
+		} else {
+			out = append(out, cur)
+			cur = c
+		}
+	}
+	if cur != "" {
+		out = append(out, cur)
 	}
 	return out
+}
+
+func ensureSentenceEnd(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	last, _ := utf8.DecodeLastRuneInString(s)
+	if !isSentenceEnd(last) && last != ':' && last != ';' {
+		return s + "."
+	}
+	return s
 }
 
 func chunk(text string, maxRunes int) []string {

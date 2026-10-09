@@ -59,16 +59,24 @@ func (p *PiperEngine) Synthesize(ctx context.Context, text, voiceID string) (*Re
 		}
 		wavs = append(wavs, wav)
 	}
-	combined := filepath.Join(tmp, "combined.wav")
-	if err := ConcatWAV(ctx, p.FFmpegBin, wavs, combined); err != nil {
-		_ = os.RemoveAll(tmp)
-		return nil, err
+	srcWAV := wavs[0]
+	if len(wavs) > 1 {
+		combined := filepath.Join(tmp, "combined.wav")
+		if err := ConcatWAV(ctx, p.FFmpegBin, wavs, combined); err != nil {
+			_ = os.RemoveAll(tmp)
+			return nil, err
+		}
+		for _, w := range wavs {
+			_ = os.Remove(w)
+		}
+		srcWAV = combined
 	}
 	mp3 := filepath.Join(tmp, "episode.mp3")
-	if err := EncodeMP3(ctx, p.FFmpegBin, combined, mp3); err != nil {
+	if err := EncodeMP3(ctx, p.FFmpegBin, srcWAV, mp3); err != nil {
 		_ = os.RemoveAll(tmp)
 		return nil, err
 	}
+	_ = os.Remove(srcWAV)
 	f, err := os.Open(mp3)
 	if err != nil {
 		_ = os.RemoveAll(tmp)

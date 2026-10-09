@@ -84,6 +84,34 @@ func TestValidateProduction(t *testing.T) {
 	}
 }
 
+func TestKokoroConcurrencyEnv(t *testing.T) {
+	t.Setenv("AGENT_API_KEY", "k")
+	t.Setenv("FEED_USERNAME", "u")
+	t.Setenv("FEED_PASSWORD", "p")
+	t.Setenv("STORE_BACKEND", "sqlite")
+	t.Setenv("STORAGE_BACKEND", "local")
+	t.Setenv("JOB_BACKEND", "local")
+	t.Setenv("TTS_ENGINE", "mock")
+	t.Setenv("KOKORO_CONCURRENCY", "")
+
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if c.KokoroConcurrency != 1 {
+		t.Fatalf("expected default KokoroConcurrency=1, got %d", c.KokoroConcurrency)
+	}
+
+	t.Setenv("KOKORO_CONCURRENCY", "4")
+	c2, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv with KOKORO_CONCURRENCY=4: %v", err)
+	}
+	if c2.KokoroConcurrency != 4 {
+		t.Fatalf("expected KokoroConcurrency=4, got %d", c2.KokoroConcurrency)
+	}
+}
+
 func TestCloudRunJobNameEnv(t *testing.T) {
 	t.Setenv("AGENT_API_KEY", "k")
 	t.Setenv("FEED_USERNAME", "u")

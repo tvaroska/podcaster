@@ -582,6 +582,7 @@ func openEngine(cfg *config.Config) (tts.Engine, error) {
 			Lexicon:      cfg.KokoroLexicon,
 			Speed:        cfg.KokoroSpeed,
 			Threads:      cfg.KokoroThreads,
+			Concurrency:  cfg.KokoroConcurrency,
 			FFmpegBin:    cfg.FFmpegBin,
 			DefaultVoice: cfg.DefaultVoice,
 		}, nil

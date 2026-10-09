@@ -5,8 +5,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestKokoroEngineSynthesizeAndVoiceResolution(t *testing.T) {
@@ -84,6 +86,7 @@ printf "ID3fakemp3data" > "$last"
 			"--kokoro-data-dir=" + filepath.Join(modelDir, "espeak-ng-data"),
 			"--kokoro-dict-dir=" + filepath.Join(modelDir, "dict"),
 			"--kokoro-lexicon=" + filepath.Join(modelDir, "lexicon-us-en.txt") + "," + filepath.Join(modelDir, "lexicon-zh.txt"),
+			"--tts-max-num-sentences=1",
 			"--sid=3",
 			"Morning Update.",
 			"Hello world!",
@@ -122,6 +125,305 @@ printf "ID3fakemp3data" > "$last"
 			if _, err := eng.Synthesize(context.Background(), "Hello world.", bad); err == nil {
 				t.Fatalf("expected error for invalid voiceID %q", bad)
 			}
+		}
+	})
+}
+
+func TestKokoroEngineConcurrency(t *testing.T) {
+	dir := t.TempDir()
+	modelDir := filepath.Join(dir, "kokoro-multi-lang-v1_0")
+	if err := os.MkdirAll(filepath.Join(modelDir, "espeak-ng-data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fake ffmpeg that concatenates WAV files in the exact order listed in the
+	// concat file, then copies combined.wav to episode.mp3.
+	ffmpegBin := filepath.Join(dir, "fake-ffmpeg")
+	writeExecutable(t, ffmpegBin, `#!/bin/sh
+set -e
+is_concat=0
+list_file=""
+prev=""
+last=""
+for arg in "$@"; do
+  if [ "$arg" = "concat" ]; then
+    is_concat=1
+  fi
+  if [ "$prev" = "-i" ]; then
+    list_file="$arg"
+  fi
+  prev="$arg"
+  last="$arg"
+done
+if [ "$is_concat" = "1" ]; then
+  : > "$last"
+  sed -n "s/^file '\(.*\)'$/\1/p" "$list_file" | while IFS= read -r wav; do
+    cat "$wav" >> "$last"
+  done
+else
+  cat "$list_file" > "$last"
+fi
+`)
+
+	// padParagraph returns a paragraph (~290 runes) that fits in a single chunk
+	// (<= maxChunkRunes=500) on its own, but exceeds maxChunkRunes when combined
+	// with an adjacent paragraph so Preprocess keeps each paragraph separate.
+	padParagraph := func(label string) string {
+		return label + " " + strings.Repeat("word ", 55) + "end."
+	}
+
+	t.Run("output order matches chunk order and concurrency never exceeds limit", func(t *testing.T) {
+		activeDir := filepath.Join(dir, "active-pool")
+		if err := os.MkdirAll(activeDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		countsLog := filepath.Join(dir, "counts.log")
+		kokoroBin := filepath.Join(dir, "fake-kokoro-pool")
+		writeExecutable(t, kokoroBin, `#!/bin/sh
+set -e
+out=""
+text=""
+for arg in "$@"; do
+  case "$arg" in
+    --output-filename=*)
+      out="${arg#--output-filename=}"
+      ;;
+  esac
+  text="$arg"
+done
+token="`+activeDir+`/$$"
+: > "$token"
+count=$(ls -1 "`+activeDir+`" | wc -l | tr -d ' ')
+echo "$count" >> "`+countsLog+`"
+case "$out" in
+  *part-0000.wav) sleep 0.18 ;;
+  *part-0001.wav) sleep 0.14 ;;
+  *part-0002.wav) sleep 0.04 ;;
+  *) sleep 0.08 ;;
+esac
+rm -f "$token"
+printf "[%s]" "$text" > "$out"
+`)
+
+		eng := &KokoroEngine{
+			Bin:          kokoroBin,
+			ModelDir:     modelDir,
+			Speed:        1.0,
+			Threads:      2,
+			Concurrency:  3,
+			FFmpegBin:    ffmpegBin,
+			DefaultVoice: DefaultKokoroVoice,
+		}
+
+		p0 := padParagraph("Chunk zero.")
+		p1 := padParagraph("Chunk one.")
+		p2 := padParagraph("Chunk two.")
+		p3 := padParagraph("Chunk three.")
+		p4 := padParagraph("Chunk four.")
+		p5 := padParagraph("Chunk five.")
+		script := strings.Join([]string{p0, p1, p2, p3, p4, p5}, "\n\n")
+
+		res, err := eng.Synthesize(context.Background(), script, "af_heart")
+		if err != nil {
+			t.Fatalf("Synthesize failed: %v", err)
+		}
+		// Verify intermediate WAV files were eagerly deleted before res.Close().
+		if tf, ok := res.Reader.(*tmpFile); ok {
+			wavLeftovers, _ := filepath.Glob(filepath.Join(tf.dir, "*.wav"))
+			if len(wavLeftovers) > 0 {
+				t.Fatalf("expected intermediate .wav files to be deleted before Close(), found: %v", wavLeftovers)
+			}
+		}
+		gotBytes, err := io.ReadAll(res.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := res.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		want := "[" + p0 + "][" + p1 + "][" + p2 + "][" + p3 + "][" + p4 + "][" + p5 + "]"
+		if string(gotBytes) != want {
+			t.Fatalf("output order mismatch:\n got: %q\nwant: %q", string(gotBytes), want)
+		}
+
+		rawCounts, err := os.ReadFile(countsLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		maxActive := 0
+		for _, line := range strings.Split(strings.TrimSpace(string(rawCounts)), "\n") {
+			n, err := strconv.Atoi(strings.TrimSpace(line))
+			if err != nil {
+				t.Fatalf("parse active count %q: %v", line, err)
+			}
+			if n > maxActive {
+				maxActive = n
+			}
+		}
+		if maxActive > 3 {
+			t.Fatalf("concurrency exceeded limit 3: maxActive=%d", maxActive)
+		}
+		if maxActive < 2 {
+			t.Fatalf("expected concurrent execution (maxActive >= 2), got %d", maxActive)
+		}
+	})
+
+	t.Run("concurrency 1 runs sequentially in order", func(t *testing.T) {
+		activeDir := filepath.Join(dir, "active-seq")
+		if err := os.MkdirAll(activeDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		countsLog := filepath.Join(dir, "counts-seq.log")
+		orderLog := filepath.Join(dir, "order-seq.log")
+		kokoroBin := filepath.Join(dir, "fake-kokoro-seq")
+		writeExecutable(t, kokoroBin, `#!/bin/sh
+set -e
+out=""
+text=""
+for arg in "$@"; do
+  case "$arg" in
+    --output-filename=*)
+      out="${arg#--output-filename=}"
+      ;;
+  esac
+  text="$arg"
+done
+token="`+activeDir+`/$$"
+: > "$token"
+count=$(ls -1 "`+activeDir+`" | wc -l | tr -d ' ')
+echo "$count" >> "`+countsLog+`"
+echo "$text" >> "`+orderLog+`"
+sleep 0.03
+rm -f "$token"
+printf "[%s]" "$text" > "$out"
+`)
+
+		eng := &KokoroEngine{
+			Bin:          kokoroBin,
+			ModelDir:     modelDir,
+			Speed:        1.0,
+			Threads:      2,
+			Concurrency:  1,
+			FFmpegBin:    ffmpegBin,
+			DefaultVoice: DefaultKokoroVoice,
+		}
+
+		s1 := padParagraph("First paragraph.")
+		s2 := padParagraph("Second paragraph.")
+		s3 := padParagraph("Third paragraph.")
+		script := strings.Join([]string{s1, s2, s3}, "\n\n")
+		res, err := eng.Synthesize(context.Background(), script, "af_heart")
+		if err != nil {
+			t.Fatalf("Synthesize failed: %v", err)
+		}
+		gotBytes, err := io.ReadAll(res.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := res.Close(); err != nil {
+			t.Fatal(err)
+		}
+		wantOut := "[" + s1 + "][" + s2 + "][" + s3 + "]"
+		if string(gotBytes) != wantOut {
+			t.Fatalf("unexpected sequential output: %q", string(gotBytes))
+		}
+
+		rawCounts, err := os.ReadFile(countsLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(rawCounts)), "\n") {
+			if strings.TrimSpace(line) != "1" {
+				t.Fatalf("expected active count 1 under Concurrency=1, got %q", line)
+			}
+		}
+		orderBytes, err := os.ReadFile(orderLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantOrder := strings.Join([]string{s1, s2, s3}, "\n")
+		if strings.TrimSpace(string(orderBytes)) != wantOrder {
+			t.Fatalf("unexpected sequential execution order:\n%s", string(orderBytes))
+		}
+	})
+
+	t.Run("one failing chunk cancels the rest and removes temp directory", func(t *testing.T) {
+		customTmp := filepath.Join(dir, "tmp-fail")
+		if err := os.MkdirAll(customTmp, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TMPDIR", customTmp)
+
+		startedLog := filepath.Join(dir, "started-fail.log")
+		kokoroBin := filepath.Join(dir, "fake-kokoro-fail")
+		writeExecutable(t, kokoroBin, `#!/bin/sh
+out=""
+text=""
+for arg in "$@"; do
+  case "$arg" in
+    --output-filename=*)
+      out="${arg#--output-filename=}"
+      ;;
+  esac
+  text="$arg"
+done
+echo "$text" >> "`+startedLog+`"
+case "$text" in
+  *FAIL*)
+    echo "simulated synthesis failure" >&2
+    exit 1
+    ;;
+  *)
+    exec sleep 5
+    ;;
+esac
+`)
+
+		eng := &KokoroEngine{
+			Bin:          kokoroBin,
+			ModelDir:     modelDir,
+			Speed:        1.0,
+			Threads:      2,
+			Concurrency:  2,
+			FFmpegBin:    ffmpegBin,
+			DefaultVoice: DefaultKokoroVoice,
+		}
+
+		script := strings.Join([]string{
+			padParagraph("Slow chunk one."),
+			padParagraph("Chunk two FAIL."),
+			padParagraph("Slow chunk three."),
+			padParagraph("Slow chunk four."),
+			padParagraph("Slow chunk five."),
+		}, "\n\n")
+		start := time.Now()
+		_, err := eng.Synthesize(context.Background(), script, "af_heart")
+		elapsed := time.Since(start)
+		if err == nil {
+			t.Fatal("expected error from failing chunk")
+		}
+		if !strings.Contains(err.Error(), "simulated synthesis failure") {
+			t.Fatalf("expected simulated synthesis failure error, got: %v", err)
+		}
+		if elapsed >= 2*time.Second {
+			t.Fatalf("expected failing chunk to cancel in-flight chunks quickly, took %v", elapsed)
+		}
+		startedBytes, err := os.ReadFile(startedLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		startedLines := strings.Split(strings.TrimSpace(string(startedBytes)), "\n")
+		if len(startedLines) >= 5 {
+			t.Fatalf("expected queued chunks to be canceled before starting, but all %d started", len(startedLines))
+		}
+
+		leftover, err := filepath.Glob(filepath.Join(customTmp, "podcaster-kokoro-*"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(leftover) > 0 {
+			t.Fatalf("expected temp directory to be removed on error, found: %v", leftover)
 		}
 	})
 }

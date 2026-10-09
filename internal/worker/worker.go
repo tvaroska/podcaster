@@ -115,42 +115,64 @@ func (w *Worker) Process(ctx context.Context, id string) error {
 	}
 	key := episode.AudioObjectKey(ep.ID, ext)
 
-	tmp, err := os.CreateTemp("", "podcaster-audio-*."+ext)
-	if err != nil {
-		return w.fail(ctx, ep, err)
+	var (
+		audioPath string
+		n         int64
+		uploadR   io.Reader
+	)
+	type namedDiskFile interface {
+		io.ReadSeeker
+		Name() string
+		Stat() (os.FileInfo, error)
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	if diskFile, ok := result.Reader.(namedDiskFile); ok {
+		if st, statErr := diskFile.Stat(); statErr == nil && st.Mode().IsRegular() {
+			if _, seekErr := diskFile.Seek(0, io.SeekStart); seekErr == nil {
+				audioPath = diskFile.Name()
+				n = st.Size()
+				uploadR = diskFile
+			}
+		}
+	}
+	if audioPath == "" {
+		tmp, err := os.CreateTemp("", "podcaster-audio-*."+ext)
+		if err != nil {
+			return w.fail(ctx, ep, err)
+		}
+		audioPath = tmp.Name()
+		defer os.Remove(audioPath)
 
-	n, err := io.Copy(tmp, result.Reader)
-	closeErr := tmp.Close()
-	if err != nil {
-		return w.fail(ctx, ep, err)
-	}
-	if closeErr != nil {
-		return w.fail(ctx, ep, closeErr)
+		n, err = io.Copy(tmp, result.Reader)
+		closeErr := tmp.Close()
+		if err != nil {
+			return w.fail(ctx, ep, err)
+		}
+		if closeErr != nil {
+			return w.fail(ctx, ep, closeErr)
+		}
+		f, err := os.Open(audioPath)
+		if err != nil {
+			return w.fail(ctx, ep, err)
+		}
+		defer f.Close()
+		uploadR = f
 	}
 
 	duration := result.DurationSeconds
 	if duration <= 0 && w.FFmpegBin != "" {
-		if d, perr := tts.ProbeDuration(ctx, w.FFmpegBin, tmpName); perr == nil {
+		if d, perr := tts.ProbeDuration(ctx, w.FFmpegBin, audioPath); perr == nil {
 			duration = d
 		} else {
 			log.Warn("duration probe failed", "err", perr)
 		}
 	}
 	if duration <= 0 {
-		if b, rerr := os.ReadFile(tmpName); rerr == nil {
+		if b, rerr := os.ReadFile(audioPath); rerr == nil {
 			duration = tts.MP3DurationSeconds(b)
 		}
 	}
 
-	f, err := os.Open(tmpName)
-	if err != nil {
-		return w.fail(ctx, ep, err)
-	}
-	defer f.Close()
-	if err := w.Storage.Put(ctx, key, f, n, result.ContentType); err != nil {
+	if err := w.Storage.Put(ctx, key, uploadR, n, result.ContentType); err != nil {
 		return w.fail(ctx, ep, fmt.Errorf("store audio: %w", err))
 	}
 

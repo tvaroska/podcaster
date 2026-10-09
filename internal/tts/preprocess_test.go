@@ -62,19 +62,31 @@ func TestChunkSeparatorBoundary(t *testing.T) {
 func TestPreprocessCleansMarkdownAndSplitsParagraphs(t *testing.T) {
 	input := "# Morning Briefing\n\n- **First** update with `inline_code` and a [report link](https://example.com/a).\n- Second bullet point https://example.com/raw\n\n---\n\nSecond paragraph after rule."
 	chunks := Preprocess(input)
-	if len(chunks) != 3 {
-		t.Fatalf("expected 3 paragraph chunks (heading, list, second paragraph), got %d: %#v", len(chunks), chunks)
+	if len(chunks) != 1 {
+		t.Fatalf("expected short paragraphs to coalesce into 1 chunk, got %d: %#v", len(chunks), chunks)
 	}
-	if chunks[0] != "Morning Briefing." {
-		t.Fatalf("expected heading chunk with period, got %q", chunks[0])
+	got := chunks[0]
+	if !strings.HasPrefix(got, "Morning Briefing. ") {
+		t.Fatalf("expected heading prefix with period, got %q", got)
 	}
-	if strings.ContainsAny(chunks[1], "*`#[]") || strings.Contains(chunks[1], "https://") {
-		t.Fatalf("markdown or URL leaked into chunk: %q", chunks[1])
+	if strings.ContainsAny(got, "*`#[]") || strings.Contains(got, "https://") {
+		t.Fatalf("markdown or URL leaked into chunk: %q", got)
 	}
-	if !strings.Contains(chunks[1], "First update with inline_code and a report link.") {
-		t.Fatalf("unexpected cleaned list chunk: %q", chunks[1])
+	if !strings.Contains(got, "First update with inline_code and a report link.") {
+		t.Fatalf("unexpected cleaned list in chunk: %q", got)
 	}
-	if chunks[2] != "Second paragraph after rule." {
-		t.Fatalf("unexpected final paragraph chunk: %q", chunks[2])
+	if !strings.HasSuffix(got, "Second bullet point. Second paragraph after rule.") {
+		t.Fatalf("expected coalesced paragraphs with sentence punctuation, got %q", got)
+	}
+
+	// Verify paragraphs whose combined length exceeds maxChunkRunes stay in separate chunks.
+	p1 := "First long section. " + strings.Repeat("alpha ", 45) + "end."
+	p2 := "Second long section. " + strings.Repeat("bravo ", 45) + "end."
+	splitChunks := Preprocess(p1 + "\n\n" + p2)
+	if len(splitChunks) != 2 {
+		t.Fatalf("expected 2 chunks for long paragraphs, got %d", len(splitChunks))
+	}
+	if splitChunks[0] != p1 || splitChunks[1] != p2 {
+		t.Fatalf("unexpected split paragraph chunks: %#v", splitChunks)
 	}
 }
