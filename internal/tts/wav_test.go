@@ -44,8 +44,9 @@ func TestPolishChunkWAVAppliesFadesAndSilence(t *testing.T) {
 	}
 
 	// Expected total length:
-	// 300ms voice + 300ms expanded internal sentence pause + 300ms voice + 700ms trailing paragraph silence = 1600ms.
-	wantSamples := durationToSamples(sampleRate, 1600*time.Millisecond)
+	// PolishChunkWAV must NOT stretch internal pauses (like commas or stop consonants);
+	// 300ms voice + 100ms untouched internal pause + 300ms voice + 700ms trailing paragraph silence = 1400ms.
+	wantSamples := durationToSamples(sampleRate, 1400*time.Millisecond)
 	if len(gotSamples) != wantSamples {
 		t.Fatalf("polished sample count = %d, want %d", len(gotSamples), wantSamples)
 	}

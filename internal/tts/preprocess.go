@@ -34,6 +34,13 @@ var (
 
 	// changERegex matches Chang'e / Chang’e / Chang-e with optional mission number.
 	changERegex = regexp.MustCompile(`(?i)\bchang['’\-]e(?:\s*-\s*|\s+)?(\d+)?\b`)
+
+	// initialDotBeforeCap matches single-letter initials like "C. C. Chow" or "J. W. Smith"
+	// so the period does not trigger sherpa-onnx's C++ sentence splitter mid-name.
+	initialDotBeforeCap = regexp.MustCompile(`\b([A-Z])\.\s+([A-Z])`)
+
+	// emDashRegex matches em-dashes and en-dashes used as parenthetical clause pauses.
+	emDashRegex = regexp.MustCompile(`\s*[—–]\s*`)
 )
 
 // Chunk is a preprocessed text segment ready for TTS synthesis along with
@@ -253,6 +260,7 @@ func PreprocessWithBreaks(text string) []Chunk {
 	text = strings.ReplaceAll(text, "\r", "\n")
 	text = cleanMarkdown(text)
 	text = normalizeStructuralHeaders(text)
+	text = normalizeMidSentenceAbbreviations(text)
 	text = applyPhoneticOverrides(text)
 	text = normalizeInitialisms(text)
 	text = multiSpace.ReplaceAllString(text, " ")
@@ -308,6 +316,41 @@ func normalizeStructuralHeaders(text string) string {
 		nextWord := sub[4]
 		return prefix + partLabel + ": " + topic + ". ... " + nextWord
 	})
+}
+
+var midSentenceAbbreviationRules = []phoneticRule{
+	{regexp.MustCompile(`\bU\.S\.A\.`), "U S A"},
+	{regexp.MustCompile(`\bU\.S\.`), "U S"},
+	{regexp.MustCompile(`\bU\.K\.`), "U K"},
+	{regexp.MustCompile(`\bE\.U\.`), "E U"},
+	{regexp.MustCompile(`(?i)\be\.g\.,?`), "for example,"},
+	{regexp.MustCompile(`(?i)\bi\.e\.,?`), "that is,"},
+	{regexp.MustCompile(`(?i)\bvs\.(?:\s|$)`), "versus "},
+	{regexp.MustCompile(`\bDr\.\s+`), "Doctor "},
+	{regexp.MustCompile(`\bProf\.\s+`), "Professor "},
+	{regexp.MustCompile(`\bMr\.\s+`), "Mister "},
+	{regexp.MustCompile(`\bMrs\.\s+`), "Misses "},
+	{regexp.MustCompile(`\bMs\.\s+`), "Miz "},
+	{regexp.MustCompile(`\bSt\.\s+`), "Saint "},
+	{regexp.MustCompile(`(?i)\bFig\.\s*(\d+)`), "Figure $1"},
+	{regexp.MustCompile(`(?i)\bVol\.\s*(\d+)`), "Volume $1"},
+	{regexp.MustCompile(`(?i)\bNo\.\s*(\d+)`), "Number $1"},
+	{regexp.MustCompile(`(?i)\bapprox\.\s+`), "approximately "},
+}
+
+// normalizeMidSentenceAbbreviations expands dotted abbreviations, initials, and em-dashes
+// into spoken words and commas so sherpa-onnx's C++ sentence splitter never breaks a
+// sentence in the middle of a name, title, or parenthetical clause.
+func normalizeMidSentenceAbbreviations(text string) string {
+	for _, rule := range midSentenceAbbreviationRules {
+		text = rule.re.ReplaceAllString(text, rule.repl)
+	}
+	// Apply twice to catch consecutive initials like "C. C. Chow" or "J. R. R. Tolkien".
+	for i := 0; i < 3; i++ {
+		text = initialDotBeforeCap.ReplaceAllString(text, "$1 $2")
+	}
+	text = emDashRegex.ReplaceAllString(text, ", ")
+	return text
 }
 
 func applyPhoneticOverrides(text string) string {

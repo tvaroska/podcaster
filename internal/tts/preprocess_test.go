@@ -127,3 +127,25 @@ func TestSplitSentencesPreservesAbbreviationsAndInitials(t *testing.T) {
 		t.Fatalf("unexpected second sentence: %q", got[1])
 	}
 }
+
+func TestPreprocessExpandsMidSentenceAbbreviationsAndEmDashes(t *testing.T) {
+	input := "Dr. C. C. Chow and U.S. teams — working vs. legacy systems, e.g., Fig. 3 — succeeded."
+	chunks := Preprocess(input)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d: %#v", len(chunks), chunks)
+	}
+	got := chunks[0]
+	for _, want := range []string{
+		"Doctor C C Chow",
+		"U S teams, working versus legacy systems, for example, Figure 3, succeeded.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in preprocessed text, got:\n%s", want, got)
+		}
+	}
+	// Ensure no mid-sentence periods remain before the final sentence period.
+	withoutFinalPeriod := strings.TrimSuffix(got, ".")
+	if strings.Contains(withoutFinalPeriod, ".") {
+		t.Fatalf("expected no mid-sentence periods that could split sherpa-onnx, got: %q", got)
+	}
+}

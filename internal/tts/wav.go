@@ -17,9 +17,11 @@ const (
 	BoundaryFadeDuration = 8 * time.Millisecond
 )
 
-// PolishChunkWAV applies an 8ms linear fade-in/fade-out to prevent boundary clicks,
-// expands short internal inter-sentence pauses to 300ms, and appends the requested
-// trailing digital silence (300ms for sentence breaks, 700ms for paragraph/section breaks).
+// PolishChunkWAV trims leading/trailing dead air, applies an 8ms linear fade-in/fade-out
+// to prevent boundary clicks, and appends the requested trailing digital silence
+// (300ms for sentence breaks, 700ms for paragraph/section breaks).
+// It never slices or modifies pauses inside the chunk waveform so intra-sentence
+// comma and consonant closures remain completely natural.
 //
 // If path does not contain a standard 16-bit mono PCM RIFF WAVE header (for example,
 // synthetic text written by fake test scripts), PolishChunkWAV is a no-op.
@@ -41,8 +43,6 @@ func PolishChunkWAV(path string, trailingSilence time.Duration) error {
 	fadeSamples := durationToSamples(sampleRate, BoundaryFadeDuration)
 	applyLinearFadeIn(samples, fadeSamples)
 	applyLinearFadeOut(samples, fadeSamples)
-
-	samples = expandInternalSentencePauses(samples, sampleRate, SentenceSilenceDuration, fadeSamples)
 
 	if trailingSilence > 0 {
 		pad := durationToSamples(sampleRate, trailingSilence)
@@ -193,67 +193,4 @@ func applyLinearFadeOut(samples []int16, fadeSamples int) {
 	for i := 0; i < fadeSamples; i++ {
 		samples[n-1-i] = int16((int64(samples[n-1-i]) * int64(i)) / int64(fadeSamples))
 	}
-}
-
-// expandInternalSentencePauses detects inter-sentence silence valleys (>= 75ms of
-// near-zero signal <= 180 amplitude) surrounded by at least 250ms of active speech,
-// fades the edges over fadeSamples, and pads them to targetPause (300ms).
-func expandInternalSentencePauses(samples []int16, sampleRate int, targetPause time.Duration, fadeSamples int) []int16 {
-	const silenceThreshold = 180 // ~ -45 dBFS
-	minSilence := durationToSamples(sampleRate, 75*time.Millisecond)
-	targetSamples := durationToSamples(sampleRate, targetPause)
-	minVoiceMargin := durationToSamples(sampleRate, 250*time.Millisecond)
-	if targetSamples <= minSilence || len(samples) < 2*minVoiceMargin+minSilence {
-		return samples
-	}
-
-	type span struct {
-		start, end int
-	}
-	var pauses []span
-	runStart := -1
-	for i := minVoiceMargin; i < len(samples)-minVoiceMargin; i++ {
-		if abs16(samples[i]) <= silenceThreshold {
-			if runStart == -1 {
-				runStart = i
-			}
-		} else if runStart != -1 {
-			runLen := i - runStart
-			if runLen >= minSilence && runLen < targetSamples {
-				pauses = append(pauses, span{start: runStart, end: i})
-			}
-			runStart = -1
-		}
-	}
-	if runStart != -1 {
-		runLen := (len(samples) - minVoiceMargin) - runStart
-		if runLen >= minSilence && runLen < targetSamples {
-			pauses = append(pauses, span{start: runStart, end: len(samples) - minVoiceMargin})
-		}
-	}
-	if len(pauses) == 0 {
-		return samples
-	}
-
-	var out []int16
-	cursor := 0
-	for _, p := range pauses {
-		mid := (p.start + p.end) / 2
-		leftSeg := append([]int16(nil), samples[cursor:mid]...)
-		if cursor > 0 {
-			applyLinearFadeIn(leftSeg, fadeSamples)
-		}
-		applyLinearFadeOut(leftSeg, fadeSamples)
-		out = append(out, leftSeg...)
-
-		extra := targetSamples - (p.end - p.start)
-		if extra > 0 {
-			out = append(out, make([]int16, extra)...)
-		}
-		cursor = mid
-	}
-	tailSeg := append([]int16(nil), samples[cursor:]...)
-	applyLinearFadeIn(tailSeg, fadeSamples)
-	out = append(out, tailSeg...)
-	return out
 }

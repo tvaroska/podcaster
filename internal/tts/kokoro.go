@@ -422,9 +422,25 @@ func (k *KokoroEngine) Synthesize(ctx context.Context, text, voiceID string) (*R
 		}
 		wg.Wait()
 		if firstErr != nil {
-			cleanupVoices()
-			_ = os.RemoveAll(tmp)
-			return nil, firstErr
+			// If a parallel child process was OOM-killed ("signal: killed") while the
+			// parent context is still active, fall back to synthesizing any missing
+			// chunks sequentially (1 process at a time) so transient memory spikes self-heal.
+			if ctx.Err() == nil && isOOMKilledError(firstErr) {
+				for i, chunk := range chunks {
+					if st, statErr := os.Stat(wavs[i]); statErr == nil && st.Size() > 0 {
+						continue
+					}
+					if retryErr := k.runKokoro(ctx, bin, model, voices, tokens, dataDir, dictDir, lexicon, sid, chunk.Text, wavs[i], silences[i]); retryErr != nil {
+						cleanupVoices()
+						_ = os.RemoveAll(tmp)
+						return nil, retryErr
+					}
+				}
+			} else {
+				cleanupVoices()
+				_ = os.RemoveAll(tmp)
+				return nil, firstErr
+			}
 		}
 	}
 	cleanupVoices()
@@ -510,4 +526,11 @@ func (k *KokoroEngine) runKokoro(ctx context.Context, bin, model, voices, tokens
 		return fmt.Errorf("polish wav: %w", err)
 	}
 	return nil
+}
+
+func isOOMKilledError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "signal: killed")
 }

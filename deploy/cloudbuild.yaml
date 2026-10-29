@@ -1,8 +1,15 @@
 steps:
   - name: gcr.io/cloud-builders/docker
-    args: ["build", "--target", "server", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:${_TAG}", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:latest", "."]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:latest || true
+        docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:latest || true
   - name: gcr.io/cloud-builders/docker
-    args: ["build", "--target", "worker", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:${_TAG}", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:latest", "."]
+    args: ["build", "--cache-from", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:latest", "--target", "server", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:${_TAG}", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:latest", "."]
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "--cache-from", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:latest", "--target", "worker", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:${_TAG}", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:latest", "."]
 images:
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:${_TAG}
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:latest
