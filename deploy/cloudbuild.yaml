@@ -41,28 +41,31 @@ steps:
         set -euo pipefail
         SERVER_REPO="${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server"
         WORKER_REPO="${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker"
-        RESOLVED_TAG="${TAG_NAME:-${_TAG}}"
-        BUILD_TAG="${RESOLVED_TAG:-${COMMIT_SHA:-local}}"
+        CB_TAG="${TAG_NAME}"
+        CB_MANUAL_TAG="${_TAG}"
+        CB_COMMIT="${COMMIT_SHA}"
+        RESOLVED_TAG="$${CB_TAG:-$${CB_MANUAL_TAG}}"
+        BUILD_TAG="$${RESOLVED_TAG:-$${CB_COMMIT:-local}}"
 
         docker build \
-          --cache-from "${SERVER_REPO}:latest" \
+          --cache-from "$${SERVER_REPO}:latest" \
           --target server \
-          -t "${SERVER_REPO}:${BUILD_TAG}" \
-          -t "${SERVER_REPO}:latest" \
+          -t "$${SERVER_REPO}:$${BUILD_TAG}" \
+          -t "$${SERVER_REPO}:latest" \
           .
 
         docker build \
-          --cache-from "${WORKER_REPO}:latest" \
+          --cache-from "$${WORKER_REPO}:latest" \
           --target worker \
-          -t "${WORKER_REPO}:${BUILD_TAG}" \
-          -t "${WORKER_REPO}:latest" \
+          -t "$${WORKER_REPO}:$${BUILD_TAG}" \
+          -t "$${WORKER_REPO}:latest" \
           .
 
-        if [[ -n "${RESOLVED_TAG}" || "${_PUSH}" == "true" ]]; then
-          docker push "${SERVER_REPO}:${BUILD_TAG}"
-          docker push "${SERVER_REPO}:latest"
-          docker push "${WORKER_REPO}:${BUILD_TAG}"
-          docker push "${WORKER_REPO}:latest"
+        if [[ -n "$${RESOLVED_TAG}" || "${_PUSH}" == "true" ]]; then
+          docker push "$${SERVER_REPO}:$${BUILD_TAG}"
+          docker push "$${SERVER_REPO}:latest"
+          docker push "$${WORKER_REPO}:$${BUILD_TAG}"
+          docker push "$${WORKER_REPO}:latest"
         else
           echo "Skipping Artifact Registry push (TAG_NAME and _TAG are empty, _PUSH=${_PUSH})"
         fi
