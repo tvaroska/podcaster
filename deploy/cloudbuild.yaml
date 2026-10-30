@@ -1,22 +1,77 @@
+# Google Cloud Build CI/CD pipeline for Podcaster (S3-infra-33)
+#
+# Runs `go vet` and `go test ./...` before building the `server` and `worker`
+# container images. On tag pushes (`TAG_NAME` set) or manual submissions with
+# `_TAG` / `_PUSH=true`, pushes `:${RESOLVED_TAG}` and `:latest` to Artifact Registry.
 steps:
-  - name: gcr.io/cloud-builders/docker
+  - id: go-vet-and-test
+    name: golang:1.26-bookworm
+    waitFor: ["-"]
+    entrypoint: bash
+    env:
+      - CGO_ENABLED=0
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        go vet ./...
+        go test ./...
+
+  - id: pull-cache
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
     entrypoint: bash
     args:
       - -c
       - |
         docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:latest || true
         docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:latest || true
-  - name: gcr.io/cloud-builders/docker
-    args: ["build", "--cache-from", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:latest", "--target", "server", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:${_TAG}", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:latest", "."]
-  - name: gcr.io/cloud-builders/docker
-    args: ["build", "--cache-from", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:latest", "--target", "worker", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:${_TAG}", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:latest", "."]
-images:
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:${_TAG}
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server:latest
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:${_TAG}
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:latest
+
+  - id: docker-build-and-push
+    name: gcr.io/cloud-builders/docker
+    waitFor:
+      - go-vet-and-test
+      - pull-cache
+    entrypoint: bash
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        SERVER_REPO="${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server"
+        WORKER_REPO="${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker"
+        RESOLVED_TAG="${TAG_NAME:-${_TAG}}"
+        BUILD_TAG="${RESOLVED_TAG:-${COMMIT_SHA:-local}}"
+
+        docker build \
+          --cache-from "${SERVER_REPO}:latest" \
+          --target server \
+          -t "${SERVER_REPO}:${BUILD_TAG}" \
+          -t "${SERVER_REPO}:latest" \
+          .
+
+        docker build \
+          --cache-from "${WORKER_REPO}:latest" \
+          --target worker \
+          -t "${WORKER_REPO}:${BUILD_TAG}" \
+          -t "${WORKER_REPO}:latest" \
+          .
+
+        if [[ -n "${RESOLVED_TAG}" || "${_PUSH}" == "true" ]]; then
+          docker push "${SERVER_REPO}:${BUILD_TAG}"
+          docker push "${SERVER_REPO}:latest"
+          docker push "${WORKER_REPO}:${BUILD_TAG}"
+          docker push "${WORKER_REPO}:latest"
+        else
+          echo "Skipping Artifact Registry push (TAG_NAME and _TAG are empty, _PUSH=${_PUSH})"
+        fi
+
 substitutions:
   _REGION: us-central1
-  _TAG: latest
+  _TAG: ""
+  _PUSH: "auto"
+
 options:
   logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
