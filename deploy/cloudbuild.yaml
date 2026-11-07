@@ -63,12 +63,43 @@ steps:
 
         if [[ -n "$${RESOLVED_TAG}" || "${_PUSH}" == "true" ]]; then
           docker push "$${SERVER_REPO}:$${BUILD_TAG}"
-          docker push "$${SERVER_REPO}:latest"
           docker push "$${WORKER_REPO}:$${BUILD_TAG}"
-          docker push "$${WORKER_REPO}:latest"
+          if [[ ! "$${RESOLVED_TAG}" =~ -rc\. ]]; then
+            docker push "$${SERVER_REPO}:latest"
+            docker push "$${WORKER_REPO}:latest"
+          fi
         else
           echo "Skipping Artifact Registry push (TAG_NAME and _TAG are empty, _PUSH=${_PUSH})"
         fi
+
+  - id: update-podcaster-worker
+    name: gcr.io/google.com/cloudsdktool/google-cloud-cli:slim
+    waitFor:
+      - docker-build-and-push
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        RESOLVED_TAG="${TAG_NAME:-${_TAG}}"
+        if [[ "$${RESOLVED_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          gcloud run jobs update podcaster-worker \
+            --image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:$${RESOLVED_TAG}" \
+            --region="${_REGION}" \
+            --project="${PROJECT_ID}" \
+            --quiet
+        else
+          echo "Skipping podcaster-worker Cloud Run Job update (tag='$${RESOLVED_TAG}')."
+        fi
+
+  - id: flux-reconcile
+    name: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/containers/ops-flux-cli:v2.4.0
+    waitFor:
+      - docker-build-and-push
+    args:
+      - "${TAG_NAME:-${_TAG}}"
+      - "podcaster"
+      - "podcaster"
 
 substitutions:
   _REGION: us-central1
