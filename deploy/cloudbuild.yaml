@@ -50,6 +50,7 @@ steps:
         docker build \
           --cache-from "$${SERVER_REPO}:latest" \
           --target server \
+          -t "podcaster-server:ci" \
           -t "$${SERVER_REPO}:$${BUILD_TAG}" \
           -t "$${SERVER_REPO}:latest" \
           .
@@ -57,9 +58,86 @@ steps:
         docker build \
           --cache-from "$${WORKER_REPO}:latest" \
           --target worker \
+          -t "podcaster-worker:ci" \
           -t "$${WORKER_REPO}:$${BUILD_TAG}" \
           -t "$${WORKER_REPO}:latest" \
           .
+
+  - id: verify-nonroot-and-healthcheck
+    name: gcr.io/cloud-builders/docker
+    waitFor:
+      - docker-build-and-push
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        echo "Verifying non-root users on podcaster-server:ci and podcaster-worker:ci..."
+        SERVER_USER="$$(docker image inspect --format '{{.Config.User}}' podcaster-server:ci)"
+        test "$${SERVER_USER}" = "nonroot:nonroot"
+        WORKER_UID="$$(docker run --rm --entrypoint id podcaster-worker:ci -u)"
+        test "$${WORKER_UID}" = "65532"
+        docker run --rm --entrypoint test podcaster-worker:ci -x /opt/sherpa-onnx/bin/sherpa-onnx-offline-tts
+        echo "Starting podcaster-smoke server container and probing /healthz..."
+        docker run -d --name podcaster-smoke \
+          -e SQLITE_PATH=/data/podcaster.db \
+          -e LOCAL_DATA_DIR=/data \
+          podcaster-server:ci
+        trap "docker rm -f podcaster-smoke >/dev/null 2>&1 || true" EXIT
+        for i in $$(seq 1 20); do
+          if docker run --rm --network="container:podcaster-smoke" --entrypoint curl gcr.io/cloud-builders/docker -fsS http://127.0.0.1:8080/healthz >/dev/null; then
+            echo "Health probe passed on attempt $$i"
+            exit 0
+          fi
+          sleep 1
+        done
+        docker logs podcaster-smoke || true
+        exit 1
+
+  - id: trivy-vulnerability-scan
+    name: gcr.io/cloud-builders/docker
+    waitFor:
+      - docker-build-and-push
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          aquasec/trivy:0.58.1 image \
+          --scanners vuln \
+          --severity HIGH,CRITICAL \
+          --ignore-unfixed \
+          --exit-code 1 \
+          podcaster-server:ci
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          aquasec/trivy:0.58.1 image \
+          --scanners vuln \
+          --pkg-types os \
+          --severity HIGH,CRITICAL \
+          --ignore-unfixed \
+          --exit-code 1 \
+          podcaster-worker:ci
+
+  - id: push-release-images
+    name: gcr.io/cloud-builders/docker
+    waitFor:
+      - verify-nonroot-and-healthcheck
+      - trivy-vulnerability-scan
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        SERVER_REPO="${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/server"
+        WORKER_REPO="${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker"
+        CB_TAG="${TAG_NAME}"
+        CB_MANUAL_TAG="${_TAG}"
+        CB_COMMIT="${COMMIT_SHA}"
+        RESOLVED_TAG="$${CB_TAG:-$${CB_MANUAL_TAG}}"
+        BUILD_TAG="$${RESOLVED_TAG:-$${CB_COMMIT:-local}}"
 
         if [[ -n "$${RESOLVED_TAG}" || "${_PUSH}" == "true" ]]; then
           docker push "$${SERVER_REPO}:$${BUILD_TAG}"
@@ -75,7 +153,7 @@ steps:
   - id: update-podcaster-worker
     name: gcr.io/google.com/cloudsdktool/google-cloud-cli:slim
     waitFor:
-      - docker-build-and-push
+      - push-release-images
     entrypoint: bash
     args:
       - -c
@@ -97,7 +175,7 @@ steps:
   - id: flux-reconcile
     name: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/containers/ops-flux-cli:v2.4.0
     waitFor:
-      - docker-build-and-push
+      - push-release-images
     args:
       - "${TAG_NAME}"
       - "${_TAG}"

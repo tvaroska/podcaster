@@ -18,7 +18,7 @@ ENV LISTEN_ADDR=:8080
 ENTRYPOINT ["/server"]
 
 FROM debian:bookworm-slim AS worker
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
         bzip2 ca-certificates curl ffmpeg tar \
     && rm -rf /var/lib/apt/lists/*
 
