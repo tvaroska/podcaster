@@ -64,7 +64,7 @@ steps:
         if [[ -n "$${RESOLVED_TAG}" || "${_PUSH}" == "true" ]]; then
           docker push "$${SERVER_REPO}:$${BUILD_TAG}"
           docker push "$${WORKER_REPO}:$${BUILD_TAG}"
-          if [[ ! "$${RESOLVED_TAG}" =~ -rc\. ]]; then
+          if [[ "$${RESOLVED_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             docker push "$${SERVER_REPO}:latest"
             docker push "$${WORKER_REPO}:latest"
           fi
@@ -81,7 +81,9 @@ steps:
       - -c
       - |
         set -euo pipefail
-        RESOLVED_TAG="${TAG_NAME:-${_TAG}}"
+        CB_TAG="${TAG_NAME}"
+        CB_MANUAL_TAG="${_TAG}"
+        RESOLVED_TAG="$${CB_TAG:-$${CB_MANUAL_TAG}}"
         if [[ "$${RESOLVED_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
           gcloud run jobs update podcaster-worker \
             --image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/podcaster/worker:$${RESOLVED_TAG}" \
@@ -97,7 +99,8 @@ steps:
     waitFor:
       - docker-build-and-push
     args:
-      - "${TAG_NAME:-${_TAG}}"
+      - "${TAG_NAME}"
+      - "${_TAG}"
       - "podcaster"
       - "podcaster"
 
@@ -107,5 +110,6 @@ substitutions:
   _PUSH: "auto"
 
 options:
+  dynamicSubstitutions: true
   logging: CLOUD_LOGGING_ONLY
   machineType: E2_HIGHCPU_8
