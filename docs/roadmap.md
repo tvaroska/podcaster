@@ -24,3 +24,11 @@ Kokoro-82M (`sherpa-onnx`) handles standard English prose well, but mixed-case A
 ## P2 — Optional Exact Audio-Sample Chapter Anchors (`cmd/worker`)
 
 - [ ] **P2.1 — Inline `[CHAPTER: <Title>]` Sample-Accurate Timestamp Resolution:** Episode publishers can already submit arbitrary per-source or per-item `chapters` (`[]episode.Chapter{StartSeconds, Title}`) via `POST /v1/episodes` and `PATCH /v1/episodes/{id}` ([`api.md`](api.md)). To eliminate word-count WPM estimation drift on 30+ minute episodes, optionally parse inline `[CHAPTER: <Title>]` markers during chunk splitting in `internal/worker`, strip the marker before Kokoro synthesis, and compute exact `start_seconds` from cumulative synthesized WAV sample frames prior to `ffmpeg` `-16 LUFS` mastering.
+
+---
+
+## P3 — MCP `2026-07-28` Upgrade (`internal/mcp`)
+
+- [ ] **P3.1 — Stateless Core & `2026-07-28` Discovery (`internal/mcp`):** Migrate `/mcp` from session-bound handshakes to the stateless `2026-07-28` protocol (`_meta`, `MCP-Protocol-Version` header, `server/discover`, cacheable tool/resource lists) so Cloud Run scales without session pinning.
+- [ ] **P3.2 — Async Synthesis via `SEP-2663` Tasks (`io.modelcontextprotocol/tasks`):** Return an MCP Task handle from episode creation so clients track or cancel async Kokoro-82M + `ffmpeg` Cloud Run Jobs (`tasks/get`, `tasks/update`, `tasks/cancel`) instead of polling `get_episode`.
+- [ ] **P3.3 — Episode & Chapter Resources (`podcast://shows/{id}/episodes/{ep}`):** Expose transcripts, `chapters.json`, and episode metadata as URI-addressed MCP Resources so AI clients can attach show context directly.
