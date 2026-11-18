@@ -11,14 +11,14 @@ import (
 )
 
 const (
-	BackendSQLite     = "sqlite"
-	BackendFirestore  = "firestore"
-	BackendLocal      = "local"
-	BackendGCS        = "gcs"
-	BackendCloudRun   = "cloudrun"
-	EngineKokoro      = "kokoro"
-	EnginePiper       = "piper"
-	EngineMock        = "mock"
+	BackendSQLite      = "sqlite"
+	BackendFirestore   = "firestore"
+	BackendLocal       = "local"
+	BackendGCS         = "gcs"
+	BackendCloudRun    = "cloudrun"
+	EngineKokoro       = "kokoro"
+	EnginePiper        = "piper"
+	EngineMock         = "mock"
 	DefaultVoice       = "af_heart"
 	DefaultKokoroSpeed = 0.95
 	DefaultListenAddr  = ":8080"
@@ -48,24 +48,24 @@ type Config struct {
 	WorkerTimeout   time.Duration
 	ShutdownTimeout time.Duration
 
-	TTSEngine      string
-	KokoroBin      string
-	KokoroModelDir string
-	KokoroModel    string
-	KokoroVoices   string
-	KokoroTokens   string
-	KokoroDataDir  string
-	KokoroDictDir  string
+	TTSEngine         string
+	KokoroBin         string
+	KokoroModelDir    string
+	KokoroModel       string
+	KokoroVoices      string
+	KokoroTokens      string
+	KokoroDataDir     string
+	KokoroDictDir     string
 	KokoroLexicon     string
 	KokoroSpeed       float64
 	KokoroThreads     int
 	KokoroConcurrency int
 	PiperBin          string
-	PiperModel     string
-	PiperConfig    string
-	FFmpegBin      string
-	DefaultVoice   string
-	VoiceAllow     []string
+	PiperModel        string
+	PiperConfig       string
+	FFmpegBin         string
+	DefaultVoice      string
+	VoiceAllow        []string
 
 	PodcastTitle       string
 	PodcastDescription string

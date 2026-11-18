@@ -14,6 +14,7 @@ steps:
       - -c
       - |
         set -euo pipefail
+        test -z "$$(gofmt -s -l .)"
         go vet ./...
         go test ./...
 

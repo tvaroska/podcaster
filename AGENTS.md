@@ -32,44 +32,14 @@ Always run `go test ./...` and `go vet ./...` before finishing any code change. 
 - `internal/tts`: Audio synthesis (`Engine`) with `KokoroEngine` (`sherpa-onnx-offline-tts` + `Kokoro-82M`), `PiperEngine` (Piper CLI), and `MockEngine` (embedded MP3 beep), plus `ffmpeg` WAV concat & `-16 LUFS` 24 kHz MP3 mastering.
 - `internal/worker`: Episode claim (`CompareAndSwapStatus`), synthesis, duration probe, upload, and status transitions.
 
-## Critical Invariants (Do Not Break)
+## Critical Invariants (See [CRITICAL.md](CRITICAL.md) & [DECISIONS.md](DECISIONS.md))
 
-1. **Per-Show Isolation & 3-Tier Key Model**:
-   - Episodes with a non-empty `podcast_id` belong exclusively to `/p/{id}/podcast.xml`, `/p/{id}/audio/{ep}.mp3`, and `/p/{id}/episodes/{ep}/chapters.json`. They must **never** appear on the default `/podcast.xml` feed or be served by `/audio/{ep}.mp3` or `/episodes/{ep}/chapters.json`.
-   - Default-show credentials (`FEED_*`) and per-show listener credentials (`password` / `token` in the `podcasts` table/collection) must never cross-authenticate.
-   - **3-Tier Publisher & Listener Separation**:
-     - **Super Key (`ADMIN_API_KEY`, or `AGENT_API_KEY` when `ADMIN_API_KEY` is unset)**: Required to create and list shows (`POST /v1/podcasts`, `GET /v1/podcasts`), and authorized across all shows, episode updates, and credential rotations.
-     - **Default-Show Submitter (`AGENT_API_KEY` when `ADMIN_API_KEY` is set)**: Scoped exclusively to publishing, updating (`PATCH /v1/episodes/{id}` / MCP `update_episode`), and listing episodes on the default feed (`podcast_id == ""`).
-     - **Per-Show Submitter (`submit_key`)**: Scoped exclusively to publishing/updating/listing episodes for show `{id}`, viewing `{id}` (`GET /v1/podcasts/{id}`), updating `{id}`'s metadata (`PATCH /v1/podcasts/{id}` / MCP `update_podcast`), and rotating `{id}`'s listening credentials (`POST /v1/podcasts/{id}/rotate` / MCP `rotate_podcast_credentials`). It cannot create/list other shows (`403`) or read RSS/MP3/chapters endpoints.
-   - **Credential Rotation**: `App.RotatePodcastCredentials` and `Store.UpdatePodcast` must persist updated listener `password`/`token` (and optional `submit_key`) in both SQLite and Firestore while preserving `created_at` and returning `store.ErrNotFound` when the show does not exist.
-   - `ListFilter{OnlyDefault: true}` must filter `podcast_id == ""` at the query level in **both** `SQLite.List` and `Firestore.List` before applying `LIMIT`.
-
-2. **SQLite & Firestore Parity**:
-   - Every `store.Store` method change or filter addition must be implemented identically in both `internal/store/sqlite.go` and `internal/store/firestore.go`.
-   - **SQLite Timestamp Ordering**: SQLite sorts `ORDER BY created_at DESC` lexicographically on `TEXT`. Always format SQLite timestamps with fixed 9-digit zero-padded nanoseconds (`sqliteTimeLayout = "2006-01-02T15:04:05.000000000Z"`), never variable-width `time.RFC3339Nano` on write (where `"Z" > "."` misorders sub-second timestamps).
-   - **Firestore Preconditions**: `Firestore.Update` must check document existence in a transaction (returning `store.ErrNotFound` and preserving `created_at`) and `Firestore.Delete` must use `firestore.Exists(true)` to match `SQLite`'s `RowsAffected() == 0 -> store.ErrNotFound` behavior.
-   - If you add or change a multi-field Firestore query (`Where` + `OrderBy`), you **must** update `deploy/firestore.indexes.json`, `deploy/bootstrap-gcp.sh`, and `docs/deployment.md`.
-
-3. **Status Lifecycle, Reconcile & Concurrency**:
-   - Internal store statuses are `PENDING`, `PROCESSING`, `READY`, `FAILED`.
-   - External API/MCP responses map `PENDING` → `QUEUED` via `ep.PublicStatus()`. Incoming `List` filters accept both `QUEUED` and `PENDING`.
-   - Workers must always claim episodes via `Store.CompareAndSwapStatus` (see `Worker.claim`).
-   - **Cloud Run `Reconcile` Staleness Cutoff**: `App.Reconcile` runs asynchronously on `cmd/server` startup and must enforce the `WorkerTimeout` staleness cutoff when `JOB_BACKEND=cloudrun` so cold-starting or scaling server instances never reset in-flight `PROCESSING` Cloud Run Jobs.
-   - **Canceled Context Failure Persistence**: When synthesis fails due to `WORKER_TIMEOUT` or `SIGTERM`, `Worker.fail` must use `context.WithoutCancel(ctx)` with a bounded timeout so `Store.Update` can still persist `FAILED` status.
-   - **Enqueue Failure Recovery**: If `Jobs.Enqueue` fails in `App.CreateEpisode`, keep the episode in `PENDING` (with `ErrorMessage` set) so `Reconcile` can retry it later.
-
-4. **Pure-Go / Zero-CGO & Distroless Container Builds**:
-   - Production Docker images build with `CGO_ENABLED=0` (`GOARCH=amd64`) and run `cmd/server` on `gcr.io/distroless/static-debian12:nonroot` (`65532:65532`). Do not add dependencies that require CGO.
-   - Writable volume mount paths (such as `/data` in `Dockerfile`) must be pre-created with `--chown=65532:65532` so Docker named volumes do not initialize as `root:root`.
-
-5. **Environment, Security & Cloud Run Constraints**:
-   - Binaries read process environment variables only (`internal/config/config.go`); they do **not** parse `.env` files.
-   - Local dev default credentials (`dev-agent-key`, `podcast:podcast`, `dev-feed-token`) must **only** populate when all three backends are local (`sqlite`, `local`, `local`), never when any cloud backend (`firestore`, `gcs`, `cloudrun`) is active.
-   - Never use `CLOUD_RUN_JOB` as a custom env var on a Cloud Run Service (GCP reserves it); use `CLOUD_RUN_JOB_NAME`.
-   - `cmd/worker` opens the app with `DisableDispatcher: true` and uses `JOB_BACKEND=local` in production so it does not require `CLOUD_RUN_JOB_NAME`.
-   - On public Cloud Run URLs, `/healthz` is intercepted by the Google Frontend (GFE); `/readyz` is the externally reachable readiness probe.
-   - In `requirePodcastFeed`, return `401 Unauthorized` only on `store.ErrNotFound` or bad credentials; return `500` on transient store errors so podcast apps do not treat DB blips as revoked credentials.
-   - `deploy/cloudrun-service.yaml` and `deploy/cloudrun-job.yaml` are reference templates only — `docs/deployment.md` and `deploy/bootstrap-gcp.sh` are the source of truth for GCP deployment.
+All production invariants and architectural decisions are documented in [CRITICAL.md](CRITICAL.md) and [DECISIONS.md](DECISIONS.md) (`ADR-001..005`):
+- **Per-Show Isolation & 3-Tier Key Model (`ADR-002`, `ADR-004`)**: Non-empty `podcast_id` episodes and credentials never cross-authenticate with default `/podcast.xml`; publisher keys enforce the 3-tier hierarchy (`ADMIN_API_KEY` super key, default `AGENT_API_KEY`, per-show `submit_key`); `ListFilter{OnlyDefault: true}` filters `podcast_id == ""` before `LIMIT` ([CRITICAL.md](CRITICAL.md)).
+- **SQLite & Firestore Parity (`ADR-005`)**: Implement every `store.Store` method identically in `sqlite.go` (using fixed 9-digit `sqliteTimeLayout`) and `firestore.go` (transactional `Update` existence check + `firestore.Exists(true)` on `Delete`), syncing composite indexes in `deploy/firestore.indexes.json` ([CRITICAL.md](CRITICAL.md)).
+- **CAS Status Lifecycle, Reconcile & Immutable Audio (`ADR-003`)**: Map internal `PENDING` to public `QUEUED`, claim jobs via `CompareAndSwapStatus`, write immutable `audio/<episode_id>.mp3` blobs, enforce `WorkerTimeout` staleness in `App.Reconcile` when `JOB_BACKEND=cloudrun`, and persist `FAILED` via `context.WithoutCancel(ctx)` ([CRITICAL.md](CRITICAL.md)).
+- **Pure-Go Zero-CGO, Distroless & Kokoro TTS (`ADR-001`)**: Build with `CGO_ENABLED=0` on `gcr.io/distroless/static-debian12:nonroot` (`65532:65532`, `--chown=65532:65532` on `/data`), chunk scripts `<= 500` runes, and master `Kokoro-82M` WAV output to `-16 LUFS` 24 kHz mono MP3 ([DECISIONS.md](DECISIONS.md)).
+- **Environment, Cloud Run & RSS/Chapter Contract (`ADR-002`, `ADR-004`, `ADR-005`)**: Read process env vars only (dev defaults only when all 3 backends are local), use `CLOUD_RUN_JOB_NAME` and `/readyz`, return `500` (never `401`) on transient store errors in `requirePodcastFeed`, and keep RSS `<guid>` + `<psc:chapters>` / `chapters.json` stable ([DECISIONS.md](DECISIONS.md)).
 
 ## Documentation Sync Checklist
 

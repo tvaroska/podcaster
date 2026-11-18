@@ -9,18 +9,18 @@ import (
 )
 
 var (
-	ssmlTag        = regexp.MustCompile(`(?is)</?[a-zA-Z][a-zA-Z0-9:_-]*(?:\s+[^>]*)?/?>`)
-	codeFenceLine  = regexp.MustCompile(`(?m)^\s*` + "```" + `[^\n]*\n?`)
-	inlineCode     = regexp.MustCompile("`([^`\n]+)`")
-	mdImage        = regexp.MustCompile(`!\[([^\]]*)\]\([^)]+\)`)
-	mdLink         = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
-	bareURL        = regexp.MustCompile(`https?://[^\s)>\]]+`)
-	mdHeading      = regexp.MustCompile(`(?m)^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$`)
-	mdBullet       = regexp.MustCompile(`(?m)^[ \t]*(?:[-*+]|\d+\.)[ \t]+`)
-	mdRule         = regexp.MustCompile(`(?m)^[ \t]*(?:[-*_][ \t]*){3,}$`)
-	mdBoldItalic   = regexp.MustCompile(`(\*\*|__)(.+?)(\*\*|__)`)
-	multiSpace     = regexp.MustCompile(`[ \t]+`)
-	multiNL        = regexp.MustCompile(`\n{3,}`)
+	ssmlTag       = regexp.MustCompile(`(?is)</?[a-zA-Z][a-zA-Z0-9:_-]*(?:\s+[^>]*)?/?>`)
+	codeFenceLine = regexp.MustCompile(`(?m)^\s*` + "```" + `[^\n]*\n?`)
+	inlineCode    = regexp.MustCompile("`([^`\n]+)`")
+	mdImage       = regexp.MustCompile(`!\[([^\]]*)\]\([^)]+\)`)
+	mdLink        = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
+	bareURL       = regexp.MustCompile(`https?://[^\s)>\]]+`)
+	mdHeading     = regexp.MustCompile(`(?m)^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$`)
+	mdBullet      = regexp.MustCompile(`(?m)^[ \t]*(?:[-*+]|\d+\.)[ \t]+`)
+	mdRule        = regexp.MustCompile(`(?m)^[ \t]*(?:[-*_][ \t]*){3,}$`)
+	mdBoldItalic  = regexp.MustCompile(`(\*\*|__)(.+?)(\*\*|__)`)
+	multiSpace    = regexp.MustCompile(`[ \t]+`)
+	multiNL       = regexp.MustCompile(`\n{3,}`)
 
 	// structuralHeaderInline matches inline section intros such as
 	// "Part 1 NASA In March 2026..." and adds colon + ellipsis pause cues:
